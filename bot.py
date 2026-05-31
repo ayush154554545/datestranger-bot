@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 from pymongo import MongoClient
 from dotenv import load_dotenv
+from keep_alive import keep_alive   # ← ADDED THIS LINE
 
 load_dotenv()
 
@@ -1274,5 +1275,8 @@ if __name__ == "__main__":
     print(f"🚀 {BOT_NAME} is starting...")
     print(f"📱 Bot: {BOT_USER}")
     print(f"👤 Admin ID: {ADMIN_ID}")
+    
+    keep_alive()   # ← ADDED THIS LINE (starts web server)
+    
     bot.remove_webhook()
     bot.infinity_polling(timeout=60, long_polling_timeout=60)
