@@ -1272,11 +1272,14 @@ def _do_broadcast(message):
 # ============================================================
 
 if __name__ == "__main__":
-    print(f"🚀 {BOT_NAME} is starting...")
-    print(f"📱 Bot: {BOT_USER}")
-    print(f"👤 Admin ID: {ADMIN_ID}")
+    print("🚀 Starting background Flask web server...")
+    keep_alive()  # <-- This MUST be here to keep the cloud happy!
     
-    keep_alive()   # ← ADDED THIS LINE (starts web server)
-    
-    bot.remove_webhook()
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    print(f"📡 {BOT_NAME} is listening for messages...")
+    while True:
+        try:
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"❌ Connection error: {e}")
+            import time
+            time.sleep(5)
