@@ -5,6 +5,7 @@
 
 from flask import Flask
 from threading import Thread
+import os
 
 app = Flask('')
 
@@ -16,7 +17,7 @@ def home():
     <html>
         <head>
             <title>Date Stranger Bot</title>
-            <meta charset="UTF-8">
+            <meta charset="UTF-8"/>
             <style>
                 body {
                     background: linear-gradient(135deg, #1a1a2e, #16213e);
@@ -91,11 +92,12 @@ def ping():
 
 
 def run():
-    app.run(host='0.0.0.0', port=8080)
+    # Dynamically bind to the platform's assigned port, default to 8080 if not specified
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
 
 
 def keep_alive():
     server = Thread(target=run)
     server.daemon = True
     server.start()
-    print("✅ Keep-alive server started on port 8080")
