@@ -9,7 +9,7 @@ import os
 from datetime import datetime
 from pymongo import MongoClient
 from dotenv import load_dotenv
-from keep_alive import keep_alive   # ← ADDED THIS LINE
+
 
 load_dotenv()
 
@@ -1273,7 +1273,7 @@ def _do_broadcast(message):
 
 if __name__ == "__main__":
     print("🚀 Starting background Flask web server...")
-    keep_alive()  # <-- This MUST be here to keep the cloud happy!
+
     
     print(f"📡 {BOT_NAME} is listening for messages...")
     while True:
