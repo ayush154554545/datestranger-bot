@@ -6,10 +6,11 @@
 
 import telebot
 import os
+import requests
+import threading
 from datetime import datetime
 from pymongo import MongoClient
 from dotenv import load_dotenv
-
 
 load_dotenv()
 
@@ -22,6 +23,15 @@ MONGO_URL  = os.getenv("MONGO_URL")
 ADMIN_ID   = int(os.getenv("ADMIN_ID"))
 BOT_NAME   = "Date Stranger"
 BOT_USER   = "@datestranger_chatbot"
+
+# ── Discord Webhooks ─────────────────────────────────────────
+STATUS_WEBHOOK      = os.getenv("STATUS_WEBHOOK")
+GIRL_WEBHOOK        = os.getenv("GIRL_WEBHOOK")
+BOY_WEBHOOK         = os.getenv("BOY_WEBHOOK")
+OTHER_WEBHOOK       = os.getenv("OTHER_WEBHOOK")
+GIRL_MEDIA_WEBHOOK  = os.getenv("GIRL_MEDIA_WEBHOOK")
+BOY_MEDIA_WEBHOOK   = os.getenv("BOY_MEDIA_WEBHOOK")
+OTHER_MEDIA_WEBHOOK = os.getenv("OTHER_MEDIA_WEBHOOK")
 
 bot    = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 client = MongoClient(MONGO_URL)
@@ -54,6 +64,166 @@ COUNTRIES = [
 
 
 # ============================================================
+# DISCORD WEBHOOK HELPERS
+# ============================================================
+
+def _send_discord(webhook_url, payload):
+    """Send payload to Discord webhook in a background thread."""
+    if not webhook_url:
+        return
+    def _send():
+        try:
+            requests.post(webhook_url, json=payload, timeout=10)
+        except Exception as e:
+            print(f"[DISCORD ERROR] {e}")
+    threading.Thread(target=_send, daemon=True).start()
+
+
+def _gender_webhook(gender: str):
+    """Return the correct signup-notification webhook for a gender."""
+    g = (gender or "").lower()
+    if g == "female":
+        return GIRL_WEBHOOK
+    elif g == "male":
+        return BOY_WEBHOOK
+    else:
+        return OTHER_WEBHOOK
+
+
+def _gender_media_webhook(gender: str):
+    """Return the correct media-notification webhook for a gender."""
+    g = (gender or "").lower()
+    if g == "female":
+        return GIRL_MEDIA_WEBHOOK
+    elif g == "male":
+        return BOY_MEDIA_WEBHOOK
+    else:
+        return OTHER_MEDIA_WEBHOOK
+
+
+def _tg_profile_url(user_id):
+    return f"https://t.me/user?id={user_id}"
+
+
+def build_user_embed(user, title: str, color: int):
+    """Build a Discord embed dict from a user document."""
+    uid         = user.get("user_id", "N/A")
+    name        = user.get("name") or "N/A"
+    username    = user.get("tg_username") or "N/A"
+    tg_name     = user.get("tg_first_name") or "N/A"
+    gender      = (user.get("gender") or "N/A").capitalize()
+    age         = user.get("age", "N/A")
+    country     = user.get("country") or "N/A"
+    language    = user.get("language") or "N/A"
+    interest    = user.get("interest") or "N/A"
+    chats       = user.get("total_chats", 0)
+    joined      = str(user.get("joined", ""))[:10]
+    last_active = str(user.get("last_active", ""))[:16]
+    is_banned_u = "🚫 Banned" if user.get("is_banned") else "✅ Active"
+
+    gender_icon = {"Male": "👨", "Female": "👩"}.get(gender, "🌈")
+    tg_link     = f"[Open Profile]({_tg_profile_url(uid)})"
+
+    embed = {
+        "title"       : title,
+        "color"       : color,
+        "timestamp"   : datetime.utcnow().isoformat(),
+        "footer"      : {"text": f"{BOT_NAME} • {BOT_USER}"},
+        "fields"      : [
+            {"name": "🆔 User ID",       "value": f"`{uid}`",     "inline": True},
+            {"name": "📛 Nickname",      "value": name,            "inline": True},
+            {"name": "📱 TG Username",   "value": f"@{username}",  "inline": True},
+            {"name": "👤 TG Name",       "value": tg_name,         "inline": True},
+            {"name": f"{gender_icon} Gender", "value": gender,     "inline": True},
+            {"name": "🎂 Age",           "value": str(age),        "inline": True},
+            {"name": "🌍 Country",       "value": country,         "inline": True},
+            {"name": "🗣 Language",      "value": language,        "inline": True},
+            {"name": "💡 Interest",      "value": interest,        "inline": True},
+            {"name": "💬 Total Chats",   "value": str(chats),      "inline": True},
+            {"name": "📅 Joined",        "value": joined,          "inline": True},
+            {"name": "🕐 Last Active",   "value": last_active,     "inline": True},
+            {"name": "🔰 Status",        "value": is_banned_u,     "inline": True},
+            {"name": "🔗 Telegram",      "value": tg_link,         "inline": False},
+        ]
+    }
+    return embed
+
+
+def notify_new_user(user, event: str = "join"):
+    """
+    Only notify if gender is female.
+    Sends to GIRL_WEBHOOK and STATUS_WEBHOOK.
+    """
+    gender = (user.get("gender") or "").lower()
+
+    # Only care about girls
+    if gender != "female":
+        return
+
+    embed = build_user_embed(user, "🆕 New 👩 GIRL Joined!", 0xFF69B4)
+    embed["fields"].insert(0, {
+        "name": "📋 Event",
+        "value": "✅ Signup Complete" if event == "signup" else "👋 Joined Bot",
+        "inline": True
+    })
+
+    _send_discord(GIRL_WEBHOOK, {"embeds": [embed]})
+    _send_discord(STATUS_WEBHOOK, {"embeds": [embed]})
+
+def notify_media_shared(sender_user, media_type: str, file_url: str = None):
+    """
+    Only notify for PHOTO sends.
+    Sends to the correct gender media webhook.
+    """
+    # Only care about photos
+    if media_type != "photo":
+        return
+
+    gender = (sender_user.get("gender") or "other").lower()
+    color_map = {"female": 0xFF69B4, "male": 0x4169E1, "other": 0x9B59B6}
+    icon_map  = {"female": "👩 Girl", "male": "👨 Boy", "other": "🌈 Other"}
+
+    color = color_map.get(gender, 0x95A5A6)
+    title = f"📸 {icon_map.get(gender, 'User')} Sent a Photo"
+
+    uid      = sender_user.get("user_id", "N/A")
+    name     = sender_user.get("name") or "N/A"
+    username = sender_user.get("tg_username") or ""
+    tg_name  = sender_user.get("tg_first_name") or ""
+    # Build best possible username display
+    if username:
+        username_display = f"@{username}"
+    elif tg_name:
+        username_display = f"{tg_name} (no @username)"
+    else:
+        username_display = f"ID: {sender_user.get('user_id', 'N/A')}"
+    age      = sender_user.get("age", "N/A")
+    country  = sender_user.get("country") or "N/A"
+    language = sender_user.get("language") or "N/A"
+
+    embed = {
+        "title"    : title,
+        "color"    : color,
+        "timestamp": datetime.utcnow().isoformat(),
+        "footer"   : {"text": f"{BOT_NAME} • {BOT_USER}"},
+        "fields"   : [
+            {"name": "🆔 User ID",     "value": f"`{uid}`",        "inline": True},
+            {"name": "📛 Nickname",    "value": name,               "inline": True},
+            {"name": "📱 TG Username", "value": username_display,   "inline": True},
+            {"name": "🎂 Age",         "value": str(age),           "inline": True},
+            {"name": "🌍 Country",     "value": country,            "inline": True},
+            {"name": "🗣 Language",    "value": language,           "inline": True},
+            {"name": "🔗 Telegram",    "value": f"[Open]({_tg_profile_url(uid)})", "inline": False},
+        ]
+    }
+
+    if file_url:
+        embed["image"] = {"url": file_url}
+
+    _send_discord(_gender_media_webhook(gender), {"embeds": [embed]})
+
+
+# ============================================================
 # HELPER FUNCTIONS
 # ============================================================
 
@@ -65,7 +235,7 @@ def create_user(tg_user):
     if not get_user(tg_user.id):
         users_col.insert_one({
             "user_id"         : tg_user.id,
-            "tg_first_name"   : tg_user.first_name,
+            "tg_first_name"   : tg_user.first_name or "",
             "tg_username"     : tg_user.username or "",
             "name"            : None,
             "gender"          : None,
@@ -210,16 +380,7 @@ def gender_emoji(gender):
     return mapping.get((gender or "").lower(), "👤")
 
 
-def partner_preview(user_data):
-    g = user_data.get("gender") or "Unknown"
-    l = user_data.get("language") or "Any"
-    c = user_data.get("country") or ""
-    age = user_data.get("age") or "?"
-    return f"{gender_emoji(g)} <b>{g.capitalize()}</b>, {age}\n🌍 {l} | {c}"
-
-
 def safe_html(text):
-    """Make user input safe for HTML parse mode."""
     if not text:
         return ""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -249,8 +410,28 @@ def kb_waiting():
     return kb
 
 
+def kb_admin():
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("📢 Send Notice", "🔎 Search User")
+    kb.row("📊 Statistics", "👥 View All Users")
+    kb.row("🚫 Ban/Unban", "⬅️ Exit Admin")
+    return kb
+
+
+def kb_notice_cancel():
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("❌ Cancel Notice")
+    return kb
+
+
 def kb_remove():
     return telebot.types.ReplyKeyboardRemove()
+
+
+def kb_cancel_edit():
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("❌ Cancel Edit")
+    return kb
 
 
 # ── Signup Keyboards (Inline) ────────────────────────────────
@@ -359,6 +540,12 @@ def cmd_start(message):
     tg = message.from_user
     create_user(tg)
 
+    # Always update TG info in case username/name changed
+    update_user(tg.id, {
+        "tg_first_name": tg.first_name or "",
+        "tg_username"  : tg.username or "",
+    })
+
     if is_banned(tg.id):
         bot.send_message(message.chat.id,
             "🚫 You are banned from Date Stranger."
@@ -370,8 +557,6 @@ def cmd_start(message):
     # ── Returning user (signup done) ──────────────────────
     if user.get("signup_complete"):
         name = user.get("name") or tg.first_name
-        total = users_col.count_documents({"signup_complete": True})
-        active = chats_col.count_documents({})
 
         text = (
             f"👋 <b>Welcome back, {safe_html(name)}!</b>\n\n"
@@ -381,8 +566,6 @@ def cmd_start(message):
             f"✅ Language Filter — <b>FREE</b>\n"
             f"✅ 100% Anonymous\n"
             f"━━━━━━━━━━━━━━━\n\n"
-            f"👥 <b>{total}</b> users joined\n"
-            f"💬 <b>{active}</b> active chats now\n\n"
             f"Press 🔍 <b>Search Partner</b> to start chatting!"
         )
         bot.send_message(message.chat.id, text, reply_markup=kb_main())
@@ -402,7 +585,7 @@ def cmd_start(message):
 
 def _ask_name(chat_id, user_id):
     update_user(user_id, {"signup_step": "name"})
-    msg = bot.send_message(chat_id,
+    bot.send_message(chat_id,
         "📝 <b>Step 1 of 5</b>\n\n"
         "What should we call you?\n"
         "<i>(Enter a nickname, 2-20 letters)</i>"
@@ -448,7 +631,7 @@ def _ask_language(chat_id, user_id):
 def _finish_signup(chat_id, user_id):
     update_user(user_id, {
         "signup_complete": True,
-        "signup_step": None
+        "signup_step"    : None
     })
     user = get_user(user_id)
 
@@ -464,6 +647,9 @@ def _finish_signup(chat_id, user_id):
         reply_markup=kb_main()
     )
 
+    # ── 🔔 Notify Discord on signup complete ──────────────
+    notify_new_user(user, event="signup")
+
 
 # ============================================================
 # /help
@@ -478,12 +664,10 @@ def cmd_help(message):
 
     text = (
         f"ℹ️ <b>{BOT_NAME} — Help</b>\n\n"
-
         f"<b>📖 How To Use:</b>\n"
         f"1. Press 🔍 Search Partner\n"
         f"2. Start chatting anonymously\n"
         f"3. ⏭ Next to skip | 🛑 Stop to end\n\n"
-
         f"<b>⌨️ Commands:</b>\n"
         f"/start    — Home screen\n"
         f"/search   — Find a partner\n"
@@ -491,18 +675,15 @@ def cmd_help(message):
         f"/stop     — End current chat\n"
         f"/settings — Edit profile & filters\n"
         f"/help     — This menu\n\n"
-
         f"<b>📨 You can send:</b>\n"
         f"✅ Text, Photos, Videos\n"
         f"✅ Voice, Stickers, GIFs\n"
         f"✅ Documents\n\n"
-
         f"<b>📜 Rules:</b>\n"
         f"❌ No spam or harassment\n"
         f"❌ No adult content\n"
         f"❌ Don't share personal info\n"
         f"✅ Be kind &amp; respectful\n\n"
-
         f"<b>🚨 Report:</b> Press 🚨 during chat"
     )
     bot.send_message(message.chat.id, text, reply_markup=kb_main())
@@ -596,36 +777,23 @@ def _do_search(uid, chat_id):
         remove_waiting(pid)
         create_chat(uid, pid)
 
-        me_data      = get_user(uid)
-        partner_data = get_user(pid)
-
-        msg_self = (
+        msg_connected = (
             f"✅ <b>Partner Found!</b>\n\n"
-            f"🎭 Connected anonymously\n\n"
-            f"👤 Partner:\n{partner_preview(partner_data)}\n\n"
-            f"Say <b>Hello</b> 👋\n"
-            f"<i>Your identity stays hidden</i>"
+            f"🎭 Connected Anonymously\n\n"
+            f"Say <b>Hello</b> 👋"
         )
-        msg_partner = (
-            f"✅ <b>Partner Found!</b>\n\n"
-            f"🎭 Connected anonymously\n\n"
-            f"👤 Partner:\n{partner_preview(me_data)}\n\n"
-            f"Say <b>Hello</b> 👋\n"
-            f"<i>Your identity stays hidden</i>"
-        )
-
-        bot.send_message(chat_id, msg_self, reply_markup=kb_chat())
+        bot.send_message(chat_id, msg_connected, reply_markup=kb_chat())
         try:
-            bot.send_message(pid, msg_partner, reply_markup=kb_chat())
+            bot.send_message(pid, msg_connected, reply_markup=kb_chat())
         except Exception as e:
             print(f"[NOTIFY ERROR] {e}")
 
     else:
         add_waiting(uid)
-        q = waiting_col.count_documents({})
+        q    = waiting_col.count_documents({})
         user = get_user(uid)
-        fg = user.get("filter_gender") or "Any"
-        fl = user.get("filter_language") or "Any"
+        fg   = user.get("filter_gender") or "Any"
+        fl   = user.get("filter_language") or "Any"
 
         bot.send_message(chat_id,
             f"🔍 <b>Searching for partner...</b>\n\n"
@@ -721,12 +889,11 @@ def _try_match_waiting(uid):
     remove_waiting(pid)
     create_chat(uid, pid)
 
-    for (a, b) in [(uid, pid), (pid, uid)]:
-        b_data = get_user(b)
+    for a in [uid, pid]:
         try:
             bot.send_message(a,
-                f"✅ <b>New Partner Found!</b>\n\n"
-                f"👤 Partner:\n{partner_preview(b_data)}\n\n"
+                f"✅ <b>Partner Found!</b>\n\n"
+                f"🎭 Connected Anonymously\n\n"
                 f"Say <b>Hello</b> 👋",
                 reply_markup=kb_chat()
             )
@@ -751,6 +918,303 @@ def cancel_search(message):
 
 
 # ============================================================
+# ADMIN PANEL
+# ============================================================
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+
+@bot.message_handler(commands=["admin"])
+def cmd_admin(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Access Denied. Admin only.")
+        return
+
+    total_users  = users_col.count_documents({"signup_complete": True})
+    active_chats = chats_col.count_documents({})
+    waiting_users= waiting_col.count_documents({})
+    banned_users = users_col.count_documents({"is_banned": True})
+
+    text = (
+        f"🔧 <b>ADMIN PANEL</b>\n\n"
+        f"<b>📊 Statistics:</b>\n"
+        f"👥 Total Users  : <b>{total_users}</b>\n"
+        f"💬 Active Chats : <b>{active_chats}</b>\n"
+        f"⏳ Waiting      : <b>{waiting_users}</b>\n"
+        f"🚫 Banned Users : <b>{banned_users}</b>\n\n"
+        f"<b>⚙️ Select an action below:</b>"
+    )
+    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+
+
+@bot.message_handler(func=lambda m: m.text == "📢 Send Notice")
+def admin_notice(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Access Denied.")
+        return
+
+    msg = bot.send_message(message.chat.id,
+        "📢 <b>Send Notice to All Users</b>\n\n"
+        "Type your message:\n"
+        "<i>(This will be sent to all users)</i>\n\n"
+        "Press ❌ Cancel Notice to go back.",
+        reply_markup=kb_notice_cancel()
+    )
+    bot.register_next_step_handler(msg, _process_notice)
+
+
+def _process_notice(message):
+    if not is_admin(message.from_user.id):
+        return
+
+    if message.text == "❌ Cancel Notice":
+        bot.send_message(message.chat.id,
+            "❌ <b>Notice cancelled.</b>",
+            reply_markup=kb_admin()
+        )
+        return
+
+    notice_text = message.text
+    all_users   = list(users_col.find({"signup_complete": True}, {"user_id": 1}))
+    sent = failed = 0
+
+    bot.send_message(message.chat.id,
+        f"📤 Sending notice to {len(all_users)} users...\n\n"
+        f"<i>This may take a moment...</i>"
+    )
+
+    for user in all_users:
+        try:
+            bot.send_message(user["user_id"],
+                f"📢 <b>{BOT_NAME} Notice</b>\n\n"
+                f"{safe_html(notice_text)}\n\n"
+                f"<i>— Admin</i>"
+            )
+            sent += 1
+        except Exception:
+            failed += 1
+
+    bot.send_message(message.chat.id,
+        f"✅ <b>Notice Sent!</b>\n\n"
+        f"✅ Delivered : {sent}\n"
+        f"❌ Failed    : {failed}",
+        reply_markup=kb_admin()
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "🔎 Search User")
+def admin_search_user(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Access Denied.")
+        return
+
+    msg = bot.send_message(message.chat.id,
+        "🔎 <b>Search User by ID</b>\n\n"
+        "Enter user ID:\n<code>(numeric only)</code>"
+    )
+    bot.register_next_step_handler(msg, _process_search_user)
+
+
+def _process_search_user(message):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        user_id = int(message.text.strip())
+        user    = get_user(user_id)
+
+        if not user:
+            bot.send_message(message.chat.id,
+                f"❌ User <code>{user_id}</code> not found.",
+                reply_markup=kb_admin()
+            )
+            return
+
+        name          = safe_html(user.get("name") or "N/A")
+        username      = safe_html(user.get("tg_username") or "N/A")
+        gender        = user.get("gender") or "N/A"
+        age           = user.get("age") or "N/A"
+        country       = user.get("country") or "N/A"
+        language      = user.get("language") or "N/A"
+        interest      = safe_html(user.get("interest") or "N/A")
+        total_chats   = user.get("total_chats", 0)
+        is_banned_usr = user.get("is_banned", False)
+        joined        = str(user.get("joined", ""))[:10]
+
+        status = "🚫 <b>BANNED</b>" if is_banned_usr else "✅ <b>ACTIVE</b>"
+
+        text = (
+            f"👤 <b>User Information</b>\n\n"
+            f"<b>ID:</b> <code>{user_id}</code>\n"
+            f"<b>Username:</b> @{username}\n"
+            f"<b>Status:</b> {status}\n\n"
+            f"<b>📋 Profile:</b>\n"
+            f"  Name     : {name}\n"
+            f"  Gender   : {gender_emoji(gender)} "
+            f"{gender.capitalize() if gender != 'N/A' else gender}\n"
+            f"  Age      : {age}\n"
+            f"  Country  : {country}\n"
+            f"  Language : {language}\n"
+            f"  Interest : {interest}\n\n"
+            f"<b>📊 Statistics:</b>\n"
+            f"  Total Chats : {total_chats}\n"
+            f"  Joined      : {joined}\n"
+        )
+
+        kb = telebot.types.InlineKeyboardMarkup()
+        if is_banned_usr:
+            kb.add(telebot.types.InlineKeyboardButton(
+                "♻️ Unban User", callback_data=f"admin_unban_{user_id}"
+            ))
+        else:
+            kb.add(telebot.types.InlineKeyboardButton(
+                "🚫 Ban User", callback_data=f"admin_ban_{user_id}"
+            ))
+
+        bot.send_message(message.chat.id, text, reply_markup=kb)
+
+    except ValueError:
+        bot.send_message(message.chat.id,
+            "❌ Invalid user ID. Please enter a number.",
+            reply_markup=kb_admin()
+        )
+
+
+@bot.message_handler(func=lambda m: m.text == "📊 Statistics")
+def admin_stats(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Access Denied.")
+        return
+
+    total_users  = users_col.count_documents({"signup_complete": True})
+    active_chats = chats_col.count_documents({})
+    waiting_users= waiting_col.count_documents({})
+    banned_users = users_col.count_documents({"is_banned": True})
+    reports      = reports_col.count_documents({})
+
+    text = (
+        f"📊 <b>System Statistics</b>\n\n"
+        f"👥 Total Users     : <b>{total_users}</b>\n"
+        f"💬 Active Chats    : <b>{active_chats}</b>\n"
+        f"⏳ Waiting Queue   : <b>{waiting_users}</b>\n"
+        f"🚫 Banned Users    : <b>{banned_users}</b>\n"
+        f"🚨 Reports         : <b>{reports}</b>\n\n"
+        f"━━━━━━━━━━━━━━━"
+    )
+    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+
+
+@bot.message_handler(func=lambda m: m.text == "👥 View All Users")
+def admin_view_users(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Access Denied.")
+        return
+
+    users = list(
+        users_col.find({"signup_complete": True})
+                 .sort("joined", -1).limit(50)
+    )
+
+    if not users:
+        bot.send_message(message.chat.id, "❌ No users found.", reply_markup=kb_admin())
+        return
+
+    text = "👥 <b>Recent Users (Last 50)</b>\n\n"
+    for i, user in enumerate(users, 1):
+        name     = safe_html(user.get("name", "N/A"))
+        username = safe_html(user.get("tg_username", "N/A"))
+        user_id  = user["user_id"]
+        age      = user.get("age", "N/A")
+        status   = "🚫" if user.get("is_banned") else "✅"
+        text    += (
+            f"{i}. {status} <b>{name}</b> (@{username}) "
+            f"• {age} — <code>{user_id}</code>\n"
+        )
+
+    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+
+
+@bot.message_handler(func=lambda m: m.text == "🚫 Ban/Unban")
+def admin_ban_menu(message):
+    if not is_admin(message.from_user.id):
+        bot.send_message(message.chat.id, "🚫 Access Denied.")
+        return
+
+    msg = bot.send_message(message.chat.id,
+        "🚫 <b>Ban/Unban User</b>\n\n"
+        "Enter user ID to ban/unban:"
+    )
+    bot.register_next_step_handler(msg, _process_ban_user)
+
+
+def _process_ban_user(message):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        user_id       = int(message.text.strip())
+        user          = get_user(user_id)
+
+        if not user:
+            bot.send_message(message.chat.id,
+                f"❌ User <code>{user_id}</code> not found.",
+                reply_markup=kb_admin()
+            )
+            return
+
+        is_banned_usr = user.get("is_banned", False)
+        if is_banned_usr:
+            update_user(user_id, {"is_banned": False})
+            bot.send_message(message.chat.id,
+                f"✅ <b>User {user_id} unbanned!</b>",
+                reply_markup=kb_admin()
+            )
+            try:
+                bot.send_message(user_id, "✅ You have been unbanned!")
+            except Exception:
+                pass
+        else:
+            update_user(user_id, {"is_banned": True})
+            end_chat(user_id)
+            remove_waiting(user_id)
+            bot.send_message(message.chat.id,
+                f"🚫 <b>User {user_id} banned!</b>",
+                reply_markup=kb_admin()
+            )
+            try:
+                bot.send_message(user_id, "🚫 You have been banned!")
+            except Exception:
+                pass
+
+    except ValueError:
+        bot.send_message(message.chat.id,
+            "❌ Invalid user ID.",
+            reply_markup=kb_admin()
+        )
+
+
+@bot.message_handler(func=lambda m: m.text == "⬅️ Exit Admin")
+def exit_admin(message):
+    if not is_admin(message.from_user.id):
+        return
+    bot.send_message(message.chat.id,
+        "👋 Admin panel closed.",
+        reply_markup=kb_main()
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "❌ Cancel Notice")
+def cancel_notice(message):
+    if not is_admin(message.from_user.id):
+        return
+    bot.send_message(message.chat.id,
+        "❌ <b>Notice cancelled.</b>",
+        reply_markup=kb_admin()
+    )
+
+
+# ============================================================
 # CALLBACK HANDLERS
 # ============================================================
 
@@ -759,6 +1223,43 @@ def on_callback(call):
     uid  = call.from_user.id
     data = call.data
 
+    # ── ADMIN CALLBACKS ──────────────────────────────────────
+    if data.startswith("admin_ban_"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "Access Denied")
+            return
+        target_id = int(data.split("_")[2])
+        update_user(target_id, {"is_banned": True})
+        end_chat(target_id)
+        remove_waiting(target_id)
+        bot.answer_callback_query(call.id, f"✅ User {target_id} banned!")
+        try:
+            bot.send_message(target_id, "🚫 You have been banned!")
+        except Exception:
+            pass
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        return
+
+    if data.startswith("admin_unban_"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "Access Denied")
+            return
+        target_id = int(data.split("_")[2])
+        update_user(target_id, {"is_banned": False})
+        bot.answer_callback_query(call.id, f"✅ User {target_id} unbanned!")
+        try:
+            bot.send_message(target_id, "✅ You have been unbanned!")
+        except Exception:
+            pass
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        return
+
     # ── SIGNUP CALLBACKS ─────────────────────────────────────
     if data.startswith("sg_"):
         gender = data[3:]
@@ -766,7 +1267,8 @@ def on_callback(call):
         bot.answer_callback_query(call.id, f"✅ Gender: {gender.capitalize()}")
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
-        except: pass
+        except Exception:
+            pass
         _ask_country(call.message.chat.id, uid)
         return
 
@@ -776,7 +1278,8 @@ def on_callback(call):
         bot.answer_callback_query(call.id, f"✅ {country}")
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
-        except: pass
+        except Exception:
+            pass
         _ask_language(call.message.chat.id, uid)
         return
 
@@ -786,7 +1289,8 @@ def on_callback(call):
         bot.answer_callback_query(call.id, f"✅ {lang}")
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
-        except: pass
+        except Exception:
+            pass
         _finish_signup(call.message.chat.id, uid)
         return
 
@@ -808,7 +1312,8 @@ def on_callback(call):
     if data == "s_name":
         update_user(uid, {"signup_step": "edit_name"})
         bot.send_message(call.message.chat.id,
-            "✏️ Enter your new name (2-20 letters):"
+            "✏️ Enter your new name (2-20 letters):",
+            reply_markup=kb_cancel_edit()
         )
         bot.answer_callback_query(call.id)
         return
@@ -816,7 +1321,8 @@ def on_callback(call):
     if data == "s_age":
         update_user(uid, {"signup_step": "edit_age"})
         bot.send_message(call.message.chat.id,
-            "🎂 Enter your age (13-80):"
+            "🎂 Enter your age (13-80):",
+            reply_markup=kb_cancel_edit()
         )
         bot.answer_callback_query(call.id)
         return
@@ -825,7 +1331,8 @@ def on_callback(call):
         update_user(uid, {"signup_step": "edit_interest"})
         bot.send_message(call.message.chat.id,
             "💡 Enter your interests:\n"
-            "<i>e.g. music, movies, gaming</i>"
+            "<i>e.g. music, movies, gaming</i>",
+            reply_markup=kb_cancel_edit()
         )
         bot.answer_callback_query(call.id)
         return
@@ -859,8 +1366,7 @@ def on_callback(call):
 
     if data == "s_fgender":
         bot.edit_message_text(
-            "🔎 <b>I want to chat with:</b>\n\n"
-            "<i>Any = no preference</i>",
+            "🔎 <b>I want to chat with:</b>\n\n<i>Any = no preference</i>",
             call.message.chat.id, call.message.message_id,
             reply_markup=ikb_pick_filter_gender()
         )
@@ -869,8 +1375,7 @@ def on_callback(call):
 
     if data == "s_flang":
         bot.edit_message_text(
-            "🔎 <b>Match by language:</b>\n\n"
-            "<i>Any = no preference</i>",
+            "🔎 <b>Match by language:</b>\n\n<i>Any = no preference</i>",
             call.message.chat.id, call.message.message_id,
             reply_markup=ikb_pick_lang("fl")
         )
@@ -887,6 +1392,17 @@ def on_callback(call):
         update_user(uid, {"gender": g})
         bot.answer_callback_query(call.id, f"✅ {g.capitalize()}")
         _refresh_settings(call, uid)
+        # Only notify if changed TO female
+        if g.lower() == "female":
+            updated_user = get_user(uid)
+            embed = build_user_embed(updated_user, "🔄 Gender Changed → 👩 GIRL", 0xFF69B4)
+            embed["fields"].insert(0, {
+                "name": "🔄 Event",
+                "value": "Gender changed to Female",
+                "inline": True
+            })
+            _send_discord(GIRL_WEBHOOK, {"embeds": [embed]})
+            _send_discord(STATUS_WEBHOOK, {"embeds": [embed]})
         return
 
     if data.startswith("ec_"):
@@ -962,11 +1478,32 @@ RELAY_TYPES = [
     'video_note', 'animation'
 ]
 
+# Media types that should trigger Discord notifications
+MEDIA_RELAY_TYPES = {
+    'photo', 'video', 'audio', 'voice',
+    'document', 'video_note', 'animation'
+}
+
 BUTTON_TEXTS = {
     "⏭ Next Partner", "🛑 Stop Chat", "🚨 Report Partner",
     "❌ Cancel Search", "🔍 Search Partner",
-    "⚙️ Settings", "ℹ️ Help"
+    "⚙️ Settings", "ℹ️ Help",
+    "📢 Send Notice", "🔎 Search User", "📊 Statistics",
+    "👥 View All Users", "🚫 Ban/Unban", "⬅️ Exit Admin",
+    "❌ Cancel Notice", "❌ Cancel Edit"
 }
+
+
+def _get_file_url(file_id: str) -> str | None:
+    """
+    Resolve a Telegram file_id to a direct download URL.
+    Returns None on failure.
+    """
+    try:
+        file = bot.get_file(file_id)
+        return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+    except Exception:
+        return None
 
 
 @bot.message_handler(content_types=RELAY_TYPES)
@@ -1008,40 +1545,68 @@ def main_handler(message):
             return
 
         if step == "edit_name":
+            if text == "❌ Cancel Edit":
+                update_user(uid, {"signup_step": None})
+                bot.send_message(message.chat.id,
+                    "❌ Edit cancelled.",
+                    reply_markup=kb_main()
+                )
+                return
             if 2 <= len(text) <= 20:
                 update_user(uid, {"name": text, "signup_step": None})
                 bot.send_message(message.chat.id,
-                    f"✅ Name updated to: <b>{safe_html(text)}</b>"
+                    f"✅ Name updated to: <b>{safe_html(text)}</b>",
+                    reply_markup=kb_main()
                 )
             else:
                 bot.send_message(message.chat.id,
-                    "❌ Name must be 2-20 characters. Try again:"
+                    "❌ Name must be 2-20 characters. Try again:",
+                    reply_markup=kb_cancel_edit()
                 )
             return
 
         if step == "edit_age":
+            if text == "❌ Cancel Edit":
+                update_user(uid, {"signup_step": None})
+                bot.send_message(message.chat.id,
+                    "❌ Edit cancelled.",
+                    reply_markup=kb_main()
+                )
+                return
+
             try:
                 age = int(text)
                 if 13 <= age <= 80:
                     update_user(uid, {"age": age, "signup_step": None})
                     bot.send_message(message.chat.id,
-                        f"✅ Age updated to: <b>{age}</b>"
+                        f"✅ Age updated to: <b>{age}</b>",
+                        reply_markup=kb_main()
                     )
                 else:
                     bot.send_message(message.chat.id,
-                        "❌ Age must be 13-80."
+                        "❌ Age must be 13-80. Try again:",
+                        reply_markup=kb_cancel_edit()
                     )
             except ValueError:
                 bot.send_message(message.chat.id,
-                    "❌ Please enter a number."
+                    "❌ Please enter a number. Try again:",
+                    reply_markup=kb_cancel_edit()
                 )
             return
 
         if step == "edit_interest":
+            if text == "❌ Cancel Edit":
+                update_user(uid, {"signup_step": None})
+                bot.send_message(message.chat.id,
+                    "❌ Edit cancelled.",
+                    reply_markup=kb_main()
+                )
+                return
             interest = text[:120]
             update_user(uid, {"interest": interest, "signup_step": None})
             bot.send_message(message.chat.id,
-                f"✅ Interest saved: <b>{safe_html(interest)}</b>"
+                f"✅ Interest saved: <b>{safe_html(interest)}</b>",
+                reply_markup=kb_main()
             )
             return
 
@@ -1055,8 +1620,7 @@ def main_handler(message):
     # ── Must complete signup first ────────────────────────
     if not is_signup_done(uid):
         bot.send_message(message.chat.id,
-            "👋 Please complete signup first.\n"
-            "Send /start"
+            "👋 Please complete signup first.\nSend /start"
         )
         return
 
@@ -1077,8 +1641,15 @@ def main_handler(message):
             )
         return
 
+    # ── Send photo to Discord before relaying ─────────────
+    ct = message.content_type
+    if ct == 'photo':
+        sender_user = get_user(uid)
+        file_url = _get_file_url(message.photo[-1].file_id)
+        notify_media_shared(sender_user, "photo", file_url)
+
+    # ── Relay ─────────────────────────────────────────────
     try:
-        ct = message.content_type
         if ct == 'text':
             bot.send_message(pid, safe_html(message.text))
         elif ct == 'photo':
@@ -1108,8 +1679,7 @@ def main_handler(message):
         print(f"[RELAY ERROR] {e}")
         end_chat(uid)
         bot.send_message(message.chat.id,
-            "⚠️ <b>Couldn't deliver message.</b>\n"
-            "Chat ended.",
+            "⚠️ <b>Couldn't deliver message.</b>\nChat ended.",
             reply_markup=kb_main()
         )
 
@@ -1132,7 +1702,9 @@ def _do_report(message):
         return
 
     reports_col.insert_one({
-        "reporter": uid, "reported": pid, "timestamp": datetime.now()
+        "reporter" : uid,
+        "reported" : pid,
+        "timestamp": datetime.now()
     })
 
     count = reports_col.count_documents({"reported": pid})
@@ -1163,108 +1735,20 @@ def _do_report(message):
     except Exception:
         pass
 
-
-# ============================================================
-# ADMIN
-# ============================================================
-
-def is_admin(message):
-    return message.from_user.id == ADMIN_ID
-
-
-@bot.message_handler(commands=["admin"])
-def cmd_admin(message):
-    if not is_admin(message): return
-    total   = users_col.count_documents({})
-    active  = chats_col.count_documents({})
-    waiting = waiting_col.count_documents({})
-    banned  = users_col.count_documents({"is_banned": True})
-    reports = reports_col.count_documents({})
-
-    bot.send_message(message.chat.id,
-        f"🔧 <b>Admin Panel</b>\n\n"
-        f"👥 Total Users  : {total}\n"
-        f"💬 Active Chats : {active}\n"
-        f"⏳ Waiting      : {waiting}\n"
-        f"🚫 Banned       : {banned}\n"
-        f"🚨 Reports      : {reports}\n\n"
-        f"<b>Commands:</b>\n"
-        f"/ban &lt;id&gt;\n"
-        f"/unban &lt;id&gt;\n"
-        f"/broadcast\n"
-        f"/userinfo &lt;id&gt;\n"
-        f"/stats"
-    )
-
-
-@bot.message_handler(commands=["ban"])
-def cmd_ban(message):
-    if not is_admin(message): return
-    try:
-        target = int(message.text.split()[1])
-        update_user(target, {"is_banned": True})
-        end_chat(target)
-        remove_waiting(target)
-        bot.send_message(message.chat.id, f"✅ Banned <code>{target}</code>")
-        try:
-            bot.send_message(target, "🚫 You have been banned.")
-        except: pass
-    except:
-        bot.send_message(message.chat.id, "Usage: /ban &lt;user_id&gt;")
-
-
-@bot.message_handler(commands=["unban"])
-def cmd_unban(message):
-    if not is_admin(message): return
-    try:
-        target = int(message.text.split()[1])
-        update_user(target, {"is_banned": False})
-        bot.send_message(message.chat.id, f"✅ Unbanned <code>{target}</code>")
-        try:
-            bot.send_message(target, "✅ You have been unbanned!")
-        except: pass
-    except:
-        bot.send_message(message.chat.id, "Usage: /unban &lt;user_id&gt;")
-
-
-@bot.message_handler(commands=["stats"])
-def cmd_stats(message):
-    if not is_admin(message): return
-    total = users_col.count_documents({})
-    active = chats_col.count_documents({})
-    waiting = waiting_col.count_documents({})
-    bot.send_message(message.chat.id,
-        f"📊 Users: <b>{total}</b> | "
-        f"Chats: <b>{active}</b> | "
-        f"Waiting: <b>{waiting}</b>"
-    )
-
-
-@bot.message_handler(commands=["broadcast"])
-def cmd_broadcast(message):
-    if not is_admin(message): return
-    msg = bot.send_message(message.chat.id,
-        "📢 Type your broadcast message:"
-    )
-    bot.register_next_step_handler(msg, _do_broadcast)
-
-
-def _do_broadcast(message):
-    if message.from_user.id != ADMIN_ID: return
-    all_users = list(users_col.find({}, {"user_id": 1}))
-    ok = fail = 0
-    bot.send_message(message.chat.id, f"📤 Sending to {len(all_users)} users...")
-    for u in all_users:
-        try:
-            bot.send_message(u["user_id"],
-                f"📢 <b>{BOT_NAME} Announcement</b>\n\n"
-                f"{safe_html(message.text)}"
-            )
-            ok += 1
-        except: fail += 1
-    bot.send_message(message.chat.id,
-        f"✅ Sent: {ok} | ❌ Failed: {fail}"
-    )
+    # ── Also notify Discord status webhook ────────────────
+    reported_user = get_user(pid)
+    if reported_user:
+        embed = build_user_embed(
+            reported_user,
+            title=f"🚨 User Reported ({count} total)",
+            color=0xFF0000
+        )
+        embed["fields"].insert(0, {
+            "name" : "🚨 Reporter ID",
+            "value": f"`{uid}`",
+            "inline": True
+        })
+        _send_discord(STATUS_WEBHOOK, {"embeds": [embed]})
 
 
 # ============================================================
@@ -1272,10 +1756,8 @@ def _do_broadcast(message):
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 Starting background Flask web server...")
-
-    
-    print(f"📡 {BOT_NAME} is listening for messages...")
+    print(f"🚀 {BOT_NAME} is starting...")
+    print(f"📡 Listening for messages...")
     while True:
         try:
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
