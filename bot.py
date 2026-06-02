@@ -8,7 +8,10 @@ import telebot
 import os
 import requests
 import threading
+import time
 from datetime import datetime
+from flask import Flask
+from threading import Thread
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
@@ -68,7 +71,6 @@ COUNTRIES = [
 # ============================================================
 
 def _send_discord(webhook_url, payload):
-    """Send payload to Discord webhook in a background thread."""
     if not webhook_url:
         return
     def _send():
@@ -76,11 +78,10 @@ def _send_discord(webhook_url, payload):
             requests.post(webhook_url, json=payload, timeout=10)
         except Exception as e:
             print(f"[DISCORD ERROR] {e}")
-    threading.Thread(target=_send, daemon=True).start()
+    Thread(target=_send, daemon=True).start()
 
 
 def _gender_webhook(gender: str):
-    """Return the correct signup-notification webhook for a gender."""
     g = (gender or "").lower()
     if g == "female":
         return GIRL_WEBHOOK
@@ -91,7 +92,6 @@ def _gender_webhook(gender: str):
 
 
 def _gender_media_webhook(gender: str):
-    """Return the correct media-notification webhook for a gender."""
     g = (gender or "").lower()
     if g == "female":
         return GIRL_MEDIA_WEBHOOK
@@ -106,7 +106,6 @@ def _tg_profile_url(user_id):
 
 
 def build_user_embed(user, title: str, color: int):
-    """Build a Discord embed dict from a user document."""
     uid         = user.get("user_id", "N/A")
     name        = user.get("name") or "N/A"
     username    = user.get("tg_username") or "N/A"
@@ -150,13 +149,7 @@ def build_user_embed(user, title: str, color: int):
 
 
 def notify_new_user(user, event: str = "join"):
-    """
-    Only notify if gender is female.
-    Sends to GIRL_WEBHOOK and STATUS_WEBHOOK.
-    """
     gender = (user.get("gender") or "").lower()
-
-    # Only care about girls
     if gender != "female":
         return
 
@@ -170,12 +163,8 @@ def notify_new_user(user, event: str = "join"):
     _send_discord(GIRL_WEBHOOK, {"embeds": [embed]})
     _send_discord(STATUS_WEBHOOK, {"embeds": [embed]})
 
+
 def notify_media_shared(sender_user, media_type: str, file_url: str = None):
-    """
-    Only notify for PHOTO sends.
-    Sends to the correct gender media webhook.
-    """
-    # Only care about photos
     if media_type != "photo":
         return
 
@@ -190,13 +179,14 @@ def notify_media_shared(sender_user, media_type: str, file_url: str = None):
     name     = sender_user.get("name") or "N/A"
     username = sender_user.get("tg_username") or ""
     tg_name  = sender_user.get("tg_first_name") or ""
-    # Build best possible username display
+
     if username:
         username_display = f"@{username}"
     elif tg_name:
         username_display = f"{tg_name} (no @username)"
     else:
         username_display = f"ID: {sender_user.get('user_id', 'N/A')}"
+
     age      = sender_user.get("age", "N/A")
     country  = sender_user.get("country") or "N/A"
     language = sender_user.get("language") or "N/A"
@@ -540,7 +530,6 @@ def cmd_start(message):
     tg = message.from_user
     create_user(tg)
 
-    # Always update TG info in case username/name changed
     update_user(tg.id, {
         "tg_first_name": tg.first_name or "",
         "tg_username"  : tg.username or "",
@@ -554,7 +543,6 @@ def cmd_start(message):
 
     user = get_user(tg.id)
 
-    # ── Returning user (signup done) ──────────────────────
     if user.get("signup_complete"):
         name = user.get("name") or tg.first_name
 
@@ -571,7 +559,6 @@ def cmd_start(message):
         bot.send_message(message.chat.id, text, reply_markup=kb_main())
         return
 
-    # ── New user (start signup) ───────────────────────────
     bot.send_message(message.chat.id,
         f"💘 <b>Welcome to Date Stranger!</b>\n\n"
         f"Let's set up your profile first.\n"
@@ -647,7 +634,6 @@ def _finish_signup(chat_id, user_id):
         reply_markup=kb_main()
     )
 
-    # ── 🔔 Notify Discord on signup complete ──────────────
     notify_new_user(user, event="signup")
 
 
@@ -931,10 +917,10 @@ def cmd_admin(message):
         bot.send_message(message.chat.id, "🚫 Access Denied. Admin only.")
         return
 
-    total_users  = users_col.count_documents({"signup_complete": True})
-    active_chats = chats_col.count_documents({})
-    waiting_users= waiting_col.count_documents({})
-    banned_users = users_col.count_documents({"is_banned": True})
+    total_users   = users_col.count_documents({"signup_complete": True})
+    active_chats  = chats_col.count_documents({})
+    waiting_users = waiting_col.count_documents({})
+    banned_users  = users_col.count_documents({"is_banned": True})
 
     text = (
         f"🔧 <b>ADMIN PANEL</b>\n\n"
@@ -1087,11 +1073,11 @@ def admin_stats(message):
         bot.send_message(message.chat.id, "🚫 Access Denied.")
         return
 
-    total_users  = users_col.count_documents({"signup_complete": True})
-    active_chats = chats_col.count_documents({})
-    waiting_users= waiting_col.count_documents({})
-    banned_users = users_col.count_documents({"is_banned": True})
-    reports      = reports_col.count_documents({})
+    total_users   = users_col.count_documents({"signup_complete": True})
+    active_chats  = chats_col.count_documents({})
+    waiting_users = waiting_col.count_documents({})
+    banned_users  = users_col.count_documents({"is_banned": True})
+    reports       = reports_col.count_documents({})
 
     text = (
         f"📊 <b>System Statistics</b>\n\n"
@@ -1223,7 +1209,6 @@ def on_callback(call):
     uid  = call.from_user.id
     data = call.data
 
-    # ── ADMIN CALLBACKS ──────────────────────────────────────
     if data.startswith("admin_ban_"):
         if not is_admin(uid):
             bot.answer_callback_query(call.id, "Access Denied")
@@ -1260,7 +1245,6 @@ def on_callback(call):
             pass
         return
 
-    # ── SIGNUP CALLBACKS ─────────────────────────────────────
     if data.startswith("sg_"):
         gender = data[3:]
         update_user(uid, {"gender": gender})
@@ -1294,7 +1278,6 @@ def on_callback(call):
         _finish_signup(call.message.chat.id, uid)
         return
 
-    # ── SETTINGS CALLBACKS ───────────────────────────────────
     if data == "s_back":
         user = get_user(uid)
         try:
@@ -1386,13 +1369,11 @@ def on_callback(call):
         _show_profile(call)
         return
 
-    # ── EDIT SAVES ───────────────────────────────────────────
     if data.startswith("eg_"):
         g = data[3:]
         update_user(uid, {"gender": g})
         bot.answer_callback_query(call.id, f"✅ {g.capitalize()}")
         _refresh_settings(call, uid)
-        # Only notify if changed TO female
         if g.lower() == "female":
             updated_user = get_user(uid)
             embed = build_user_embed(updated_user, "🔄 Gender Changed → 👩 GIRL", 0xFF69B4)
@@ -1478,12 +1459,6 @@ RELAY_TYPES = [
     'video_note', 'animation'
 ]
 
-# Media types that should trigger Discord notifications
-MEDIA_RELAY_TYPES = {
-    'photo', 'video', 'audio', 'voice',
-    'document', 'video_note', 'animation'
-}
-
 BUTTON_TEXTS = {
     "⏭ Next Partner", "🛑 Stop Chat", "🚨 Report Partner",
     "❌ Cancel Search", "🔍 Search Partner",
@@ -1494,11 +1469,7 @@ BUTTON_TEXTS = {
 }
 
 
-def _get_file_url(file_id: str) -> str | None:
-    """
-    Resolve a Telegram file_id to a direct download URL.
-    Returns None on failure.
-    """
+def _get_file_url(file_id: str):
     try:
         file = bot.get_file(file_id)
         return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
@@ -1513,7 +1484,6 @@ def main_handler(message):
     if is_banned(uid):
         return
 
-    # ── Handle signup text inputs ─────────────────────────
     step = get_signup_step(uid)
     if step and message.content_type == 'text':
         text = message.text.strip()
@@ -1573,7 +1543,6 @@ def main_handler(message):
                     reply_markup=kb_main()
                 )
                 return
-
             try:
                 age = int(text)
                 if 13 <= age <= 80:
@@ -1610,26 +1579,22 @@ def main_handler(message):
             )
             return
 
-    # ── Skip button taps ──────────────────────────────────
     if message.content_type == 'text':
         if message.text in BUTTON_TEXTS:
             return
         if message.text and message.text.startswith("/"):
             return
 
-    # ── Must complete signup first ────────────────────────
     if not is_signup_done(uid):
         bot.send_message(message.chat.id,
             "👋 Please complete signup first.\nSend /start"
         )
         return
 
-    # ── Report ────────────────────────────────────────────
     if message.content_type == 'text' and message.text == "🚨 Report Partner":
         _do_report(message)
         return
 
-    # ── Relay to partner ──────────────────────────────────
     pid = get_partner(uid)
 
     if not pid:
@@ -1641,14 +1606,12 @@ def main_handler(message):
             )
         return
 
-    # ── Send photo to Discord before relaying ─────────────
     ct = message.content_type
     if ct == 'photo':
         sender_user = get_user(uid)
         file_url = _get_file_url(message.photo[-1].file_id)
         notify_media_shared(sender_user, "photo", file_url)
 
-    # ── Relay ─────────────────────────────────────────────
     try:
         if ct == 'text':
             bot.send_message(pid, safe_html(message.text))
@@ -1735,7 +1698,6 @@ def _do_report(message):
     except Exception:
         pass
 
-    # ── Also notify Discord status webhook ────────────────
     reported_user = get_user(pid)
     if reported_user:
         embed = build_user_embed(
@@ -1752,16 +1714,34 @@ def _do_report(message):
 
 
 # ============================================================
+# KEEP ALIVE SERVER (For Render Free Hosting)
+# ============================================================
+
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "✅ Date Stranger Bot is Alive!"
+
+def run_web():
+    flask_app.run(host="0.0.0.0", port=10000)
+
+
+# ============================================================
 # START
 # ============================================================
 
 if __name__ == "__main__":
+
+    # Start Flask keep-alive server
+    Thread(target=run_web, daemon=True).start()
+
     print(f"🚀 {BOT_NAME} is starting...")
     print(f"📡 Listening for messages...")
+
     while True:
         try:
             bot.infinity_polling(timeout=10, long_polling_timeout=5)
         except Exception as e:
             print(f"❌ Connection error: {e}")
-            import time
             time.sleep(5)
