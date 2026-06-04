@@ -40,10 +40,12 @@ bot    = telebot.TeleBot(BOT_TOKEN, parse_mode="HTML")
 client = MongoClient(MONGO_URL)
 db     = client["datestranger"]
 
-users_col   = db["users"]
-waiting_col = db["waiting"]
-chats_col   = db["active_chats"]
-reports_col = db["reports"]
+users_col    = db["users"]
+waiting_col  = db["waiting"]
+chats_col    = db["active_chats"]
+reports_col  = db["reports"]
+notices_col  = db["notices"]
+feedback_col = db["feedback"]
 
 
 # ============================================================
@@ -64,6 +66,20 @@ COUNTRIES = [
     "🇹🇷 Turkey", "🇸🇦 Saudi Arabia", "🇦🇪 UAE",
     "🇵🇭 Philippines", "🇲🇾 Malaysia", "🌍 Other"
 ]
+
+# ── Admin States Dictionary ──────────────────────────────────
+# Stores current admin input flow state per admin user_id
+# Possible states:
+#   "notice"           → waiting for broadcast notice text
+#   "search_user"      → waiting for user id to look up
+#   "ban_user"         → waiting for user id to ban/toggle
+#   "unban_user"       → waiting for user id to unban only
+#   "broadcast_msg"    → waiting for broadcast message text
+#   "msg_user_id"      → waiting for target user id
+#   "msg_user_text"    → waiting for message text to send
+#   "set_motd"         → waiting for MOTD text
+# ────────────────────────────────────────────────────────────
+admin_states = {}
 
 
 # ============================================================
@@ -124,25 +140,25 @@ def build_user_embed(user, title: str, color: int):
     tg_link     = f"[Open Profile]({_tg_profile_url(uid)})"
 
     embed = {
-        "title"       : title,
-        "color"       : color,
-        "timestamp"   : datetime.utcnow().isoformat(),
-        "footer"      : {"text": f"{BOT_NAME} • {BOT_USER}"},
-        "fields"      : [
-            {"name": "🆔 User ID",       "value": f"`{uid}`",     "inline": True},
-            {"name": "📛 Nickname",      "value": name,            "inline": True},
-            {"name": "📱 TG Username",   "value": f"@{username}",  "inline": True},
-            {"name": "👤 TG Name",       "value": tg_name,         "inline": True},
-            {"name": f"{gender_icon} Gender", "value": gender,     "inline": True},
-            {"name": "🎂 Age",           "value": str(age),        "inline": True},
-            {"name": "🌍 Country",       "value": country,         "inline": True},
-            {"name": "🗣 Language",      "value": language,        "inline": True},
-            {"name": "💡 Interest",      "value": interest,        "inline": True},
-            {"name": "💬 Total Chats",   "value": str(chats),      "inline": True},
-            {"name": "📅 Joined",        "value": joined,          "inline": True},
-            {"name": "🕐 Last Active",   "value": last_active,     "inline": True},
-            {"name": "🔰 Status",        "value": is_banned_u,     "inline": True},
-            {"name": "🔗 Telegram",      "value": tg_link,         "inline": False},
+        "title"     : title,
+        "color"     : color,
+        "timestamp" : datetime.utcnow().isoformat(),
+        "footer"    : {"text": f"{BOT_NAME} • {BOT_USER}"},
+        "fields"    : [
+            {"name": "🆔 User ID",       "value": f"`{uid}`",    "inline": True},
+            {"name": "📛 Nickname",      "value": name,           "inline": True},
+            {"name": "📱 TG Username",   "value": f"@{username}", "inline": True},
+            {"name": "👤 TG Name",       "value": tg_name,        "inline": True},
+            {"name": f"{gender_icon} Gender", "value": gender,    "inline": True},
+            {"name": "🎂 Age",           "value": str(age),       "inline": True},
+            {"name": "🌍 Country",       "value": country,        "inline": True},
+            {"name": "🗣 Language",      "value": language,       "inline": True},
+            {"name": "💡 Interest",      "value": interest,       "inline": True},
+            {"name": "💬 Total Chats",   "value": str(chats),     "inline": True},
+            {"name": "📅 Joined",        "value": joined,         "inline": True},
+            {"name": "🕐 Last Active",   "value": last_active,    "inline": True},
+            {"name": "🔰 Status",        "value": is_banned_u,    "inline": True},
+            {"name": "🔗 Telegram",      "value": tg_link,        "inline": False},
         ]
     }
     return embed
@@ -155,8 +171,8 @@ def notify_new_user(user, event: str = "join"):
 
     embed = build_user_embed(user, "🆕 New 👩 GIRL Joined!", 0xFF69B4)
     embed["fields"].insert(0, {
-        "name": "📋 Event",
-        "value": "✅ Signup Complete" if event == "signup" else "👋 Joined Bot",
+        "name"  : "📋 Event",
+        "value" : "✅ Signup Complete" if event == "signup" else "👋 Joined Bot",
         "inline": True
     })
 
@@ -168,7 +184,7 @@ def notify_media_shared(sender_user, media_type: str, file_url: str = None):
     if media_type != "photo":
         return
 
-    gender = (sender_user.get("gender") or "other").lower()
+    gender    = (sender_user.get("gender") or "other").lower()
     color_map = {"female": 0xFF69B4, "male": 0x4169E1, "other": 0x9B59B6}
     icon_map  = {"female": "👩 Girl", "male": "👨 Boy", "other": "🌈 Other"}
 
@@ -197,12 +213,12 @@ def notify_media_shared(sender_user, media_type: str, file_url: str = None):
         "timestamp": datetime.utcnow().isoformat(),
         "footer"   : {"text": f"{BOT_NAME} • {BOT_USER}"},
         "fields"   : [
-            {"name": "🆔 User ID",     "value": f"`{uid}`",        "inline": True},
-            {"name": "📛 Nickname",    "value": name,               "inline": True},
-            {"name": "📱 TG Username", "value": username_display,   "inline": True},
-            {"name": "🎂 Age",         "value": str(age),           "inline": True},
-            {"name": "🌍 Country",     "value": country,            "inline": True},
-            {"name": "🗣 Language",    "value": language,           "inline": True},
+            {"name": "🆔 User ID",     "value": f"`{uid}`",       "inline": True},
+            {"name": "📛 Nickname",    "value": name,              "inline": True},
+            {"name": "📱 TG Username", "value": username_display,  "inline": True},
+            {"name": "🎂 Age",         "value": str(age),          "inline": True},
+            {"name": "🌍 Country",     "value": country,           "inline": True},
+            {"name": "🗣 Language",    "value": language,          "inline": True},
             {"name": "🔗 Telegram",    "value": f"[Open]({_tg_profile_url(uid)})", "inline": False},
         ]
     }
@@ -239,6 +255,7 @@ def create_user(tg_user):
             "signup_step"     : None,
             "total_chats"     : 0,
             "is_banned"       : False,
+            "is_vip"          : False,
             "joined"          : datetime.now(),
             "last_active"     : datetime.now(),
         })
@@ -267,6 +284,24 @@ def get_signup_step(user_id):
     return u.get("signup_step") if u else None
 
 
+def get_motd():
+    """Get Message of the Day from DB"""
+    doc = db["settings"].find_one({"key": "motd"})
+    return doc.get("value") if doc else None
+
+
+def set_motd(text):
+    db["settings"].update_one(
+        {"key": "motd"},
+        {"$set": {"key": "motd", "value": text, "updated": datetime.now()}},
+        upsert=True
+    )
+
+
+def clear_motd():
+    db["settings"].delete_one({"key": "motd"})
+
+
 # ── Chat State ───────────────────────────────────────────────
 
 def get_partner(user_id):
@@ -286,10 +321,16 @@ def in_waiting(user_id):
     return waiting_col.find_one({"user_id": user_id}) is not None
 
 
-def add_waiting(user_id):
+def add_waiting(user_id, priority=0):
+    """
+    Add user to waiting queue.
+    priority = 0  → normal user
+    priority = 10 → admin (always matched first)
+    """
     if not in_waiting(user_id):
         waiting_col.insert_one({
             "user_id"  : user_id,
+            "priority" : priority,
             "timestamp": datetime.now()
         })
 
@@ -317,16 +358,33 @@ def end_chat(user_id):
 # ── Matching ────────────────────────────────────────────────
 
 def find_match(user_id):
+    """
+    Find best match from waiting pool.
+
+    ADMIN PRIORITY RULES:
+    ─────────────────────
+    • Admin always wins over normal users of same compatibility.
+    • BUT gender filters are ALWAYS respected — even for admin.
+    • If admin wants Female only → only females can match admin.
+    • If a Female searches → admin (in queue) gets her FIRST
+      over any other male waiting, as long as admin's filter allows.
+    • A candidate is SKIPPED entirely if gender/lang filters
+      are hard-incompatible (both sides must agree).
+    """
     me = get_user(user_id)
     if not me:
         return None
 
     my_gender   = (me.get("gender") or "").lower()
-    my_language = (me.get("language") or "any").lower()
     my_f_gender = (me.get("filter_gender") or "any").lower()
     my_f_lang   = (me.get("filter_language") or "any").lower()
+    my_language = (me.get("language") or "any").lower()
 
-    candidates = list(waiting_col.find({"user_id": {"$ne": user_id}}))
+    # Sort: highest priority first, then oldest timestamp (FIFO)
+    candidates = list(
+        waiting_col.find({"user_id": {"$ne": user_id}})
+                   .sort([("priority", -1), ("timestamp", 1)])
+    )
     if not candidates:
         return None
 
@@ -343,18 +401,43 @@ def find_match(user_id):
         c_f_gender = (c_user.get("filter_gender") or "any").lower()
         c_f_lang   = (c_user.get("filter_language") or "any").lower()
 
-        i_want_them  = my_f_gender == "any" or my_f_gender == c_gender
-        they_want_me = c_f_gender == "any" or c_f_gender == my_gender
-        gender_ok    = i_want_them and they_want_me
+        # ── HARD FILTER: Gender must be mutually compatible ──
+        # i_want_them  = I (searcher) accept candidate's gender
+        # they_want_me = candidate accepts my gender
+        # BOTH must be true — no exceptions, even for admin
+        i_want_them  = (my_f_gender == "any") or (my_f_gender == c_gender)
+        they_want_me = (c_f_gender  == "any") or (c_f_gender  == my_gender)
 
+        if not i_want_them or not they_want_me:
+            # Hard skip — filters don't match, move to next
+            continue
+
+        # ── SOFT FILTER: Language (score-based, not hard skip) ──
         lang_ok = (
             my_f_lang == "any" or c_f_lang == "any" or
             my_f_lang == c_language or c_f_lang == my_language
         )
 
-        score = 0
-        if gender_ok: score += 2
-        if lang_ok:   score += 1
+        # ── BASE SCORE ───────────────────────────────────────
+        score = 10                 # passed gender hard filter = base points
+        if lang_ok:
+            score += 5             # language match bonus
+
+        # ── ADMIN PRIORITY BOOST ─────────────────────────────
+        # Only applied AFTER gender filter passes (so filter is respected)
+        c_priority = c.get("priority", 0)
+
+        if c_priority >= 10:
+            # Candidate in queue IS admin
+            # → boost so admin gets matched before other waiting users
+            score += 1000
+
+        if user_id == ADMIN_ID:
+            # Searcher IS admin
+            # → boost so admin jumps queue over other candidates
+            # → but gender filter above already enforced,
+            #   so admin only boosts within valid matches
+            score += 500
 
         if score > best_score:
             best_score     = score
@@ -373,7 +456,11 @@ def gender_emoji(gender):
 def safe_html(text):
     if not text:
         return ""
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    )
 
 
 # ============================================================
@@ -401,10 +488,19 @@ def kb_waiting():
 
 
 def kb_admin():
+    """
+    Admin panel keyboard.
+    Add new admin feature buttons here in future.
+    """
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("📢 Send Notice", "🔎 Search User")
-    kb.row("📊 Statistics", "👥 View All Users")
-    kb.row("🚫 Ban/Unban", "⬅️ Exit Admin")
+    kb.row("📢 Send Notice",   "📡 Broadcast")
+    kb.row("🔎 Search User",   "💬 Message User")
+    kb.row("📊 Statistics",    "👥 View All Users")
+    kb.row("🚫 Ban/Unban",     "♻️ Unban User")
+    kb.row("📋 Reports List",  "🗑 Clear Reports")
+    kb.row("📝 Set MOTD",      "🗑 Clear MOTD")
+    kb.row("🔍 Active Chats",  "⏳ Waiting List")
+    kb.row("⬅️ Exit Admin")
     return kb
 
 
@@ -421,6 +517,12 @@ def kb_remove():
 def kb_cancel_edit():
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("❌ Cancel Edit")
+    return kb
+
+
+def kb_cancel_admin_action():
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("❌ Cancel Action")
     return kb
 
 
@@ -490,10 +592,10 @@ def ikb_pick_gender(prefix):
 def ikb_pick_filter_gender():
     kb = telebot.types.InlineKeyboardMarkup(row_width=2)
     kb.add(
-        telebot.types.InlineKeyboardButton("🌐 Any",     callback_data="fg_any"),
-        telebot.types.InlineKeyboardButton("👨 Male",    callback_data="fg_male"),
-        telebot.types.InlineKeyboardButton("👩 Female",  callback_data="fg_female"),
-        telebot.types.InlineKeyboardButton("🌈 Other",   callback_data="fg_other"),
+        telebot.types.InlineKeyboardButton("🌐 Any",    callback_data="fg_any"),
+        telebot.types.InlineKeyboardButton("👨 Male",   callback_data="fg_male"),
+        telebot.types.InlineKeyboardButton("👩 Female", callback_data="fg_female"),
+        telebot.types.InlineKeyboardButton("🌈 Other",  callback_data="fg_other"),
     )
     kb.add(telebot.types.InlineKeyboardButton("◀️ Back", callback_data="s_back"))
     return kb
@@ -546,6 +648,10 @@ def cmd_start(message):
     if user.get("signup_complete"):
         name = user.get("name") or tg.first_name
 
+        # Show MOTD if admin has set one
+        motd      = get_motd()
+        motd_text = f"\n\n📢 <b>Notice:</b>\n{safe_html(motd)}" if motd else ""
+
         text = (
             f"👋 <b>Welcome back, {safe_html(name)}!</b>\n\n"
             f"💘 <b>Date Stranger</b> — Anonymous Chat\n\n"
@@ -553,7 +659,8 @@ def cmd_start(message):
             f"✅ Gender Filter — <b>FREE</b>\n"
             f"✅ Language Filter — <b>FREE</b>\n"
             f"✅ 100% Anonymous\n"
-            f"━━━━━━━━━━━━━━━\n\n"
+            f"━━━━━━━━━━━━━━━"
+            f"{motd_text}\n\n"
             f"Press 🔍 <b>Search Partner</b> to start chatting!"
         )
         bot.send_message(message.chat.id, text, reply_markup=kb_main())
@@ -659,8 +766,9 @@ def cmd_help(message):
         f"/search   — Find a partner\n"
         f"/next     — Skip to next person\n"
         f"/stop     — End current chat\n"
-        f"/settings — Edit profile & filters\n"
-        f"/help     — This menu\n\n"
+        f"/settings — Edit profile &amp; filters\n"
+        f"/help     — This menu\n"
+        f"/feedback — Send feedback to admin\n\n"
         f"<b>📨 You can send:</b>\n"
         f"✅ Text, Photos, Videos\n"
         f"✅ Voice, Stickers, GIFs\n"
@@ -670,9 +778,51 @@ def cmd_help(message):
         f"❌ No adult content\n"
         f"❌ Don't share personal info\n"
         f"✅ Be kind &amp; respectful\n\n"
-        f"<b>🚨 Report:</b> Press 🚨 during chat"
+        f"<b>🚨 Report:</b> Press 🚨 during chat\n\n"
+        f"<b>💬 Feedback:</b> /feedback your message"
     )
     bot.send_message(message.chat.id, text, reply_markup=kb_main())
+
+
+# ============================================================
+# /feedback
+# ============================================================
+
+@bot.message_handler(commands=["feedback"])
+def cmd_feedback(message):
+    uid = message.from_user.id
+    if not is_signup_done(uid):
+        cmd_start(message)
+        return
+
+    text = message.text.replace("/feedback", "").strip()
+    if not text:
+        bot.send_message(message.chat.id,
+            "💬 <b>Send Feedback</b>\n\n"
+            "Usage: /feedback <i>your message here</i>"
+        )
+        return
+
+    feedback_col.insert_one({
+        "user_id"  : uid,
+        "text"     : text,
+        "timestamp": datetime.now()
+    })
+
+    bot.send_message(message.chat.id,
+        "✅ <b>Feedback sent!</b>\nThank you 🙏"
+    )
+
+    try:
+        user = get_user(uid)
+        name = user.get("name") or "N/A"
+        bot.send_message(ADMIN_ID,
+            f"💬 <b>New Feedback</b>\n\n"
+            f"From: <code>{uid}</code> ({safe_html(name)})\n\n"
+            f"📝 {safe_html(text)}"
+        )
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -755,7 +905,9 @@ def cmd_search(message):
 
 
 def _do_search(uid, chat_id):
-    match = find_match(uid)
+    # Admin enters queue with priority=10, everyone else 0
+    priority = 10 if uid == ADMIN_ID else 0
+    match    = find_match(uid)
 
     if match:
         pid = match["user_id"]
@@ -764,9 +916,9 @@ def _do_search(uid, chat_id):
         create_chat(uid, pid)
 
         msg_connected = (
-            f"✅ <b>Partner Found!</b>\n\n"
-            f"🎭 Connected Anonymously\n\n"
-            f"Say <b>Hello</b> 👋"
+            "✅ <b>Partner Found!</b>\n\n"
+            "🎭 Connected Anonymously\n\n"
+            "Say <b>Hello</b> 👋"
         )
         bot.send_message(chat_id, msg_connected, reply_markup=kb_chat())
         try:
@@ -775,11 +927,13 @@ def _do_search(uid, chat_id):
             print(f"[NOTIFY ERROR] {e}")
 
     else:
-        add_waiting(uid)
+        add_waiting(uid, priority=priority)
         q    = waiting_col.count_documents({})
         user = get_user(uid)
         fg   = user.get("filter_gender") or "Any"
         fl   = user.get("filter_language") or "Any"
+
+        admin_tag = "\n🔰 <b>Admin Priority Active</b>" if uid == ADMIN_ID else ""
 
         bot.send_message(chat_id,
             f"🔍 <b>Searching for partner...</b>\n\n"
@@ -787,7 +941,7 @@ def _do_search(uid, chat_id):
             f"  Gender   → {fg}\n"
             f"  Language → {fl}\n\n"
             f"👥 In queue: <b>{q}</b>\n"
-            f"⏳ We'll notify you!\n\n"
+            f"⏳ We'll notify you!{admin_tag}\n\n"
             f"<i>Press ❌ to cancel</i>",
             reply_markup=kb_waiting()
         )
@@ -878,9 +1032,9 @@ def _try_match_waiting(uid):
     for a in [uid, pid]:
         try:
             bot.send_message(a,
-                f"✅ <b>Partner Found!</b>\n\n"
-                f"🎭 Connected Anonymously\n\n"
-                f"Say <b>Hello</b> 👋",
+                "✅ <b>Partner Found!</b>\n\n"
+                "🎭 Connected Anonymously\n\n"
+                "Say <b>Hello</b> 👋",
                 reply_markup=kb_chat()
             )
         except Exception:
@@ -911,190 +1065,157 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 
-@bot.message_handler(commands=["admin"])
-def cmd_admin(message):
+def _admin_only(message):
+    """Returns True (and sends error) if the sender is NOT admin."""
     if not is_admin(message.from_user.id):
         bot.send_message(message.chat.id, "🚫 Access Denied. Admin only.")
+        return True
+    return False
+
+
+@bot.message_handler(commands=["admin"])
+def cmd_admin(message):
+    if _admin_only(message):
         return
-
-    total_users   = users_col.count_documents({"signup_complete": True})
-    active_chats  = chats_col.count_documents({})
-    waiting_users = waiting_col.count_documents({})
-    banned_users  = users_col.count_documents({"is_banned": True})
-
-    text = (
-        f"🔧 <b>ADMIN PANEL</b>\n\n"
-        f"<b>📊 Statistics:</b>\n"
-        f"👥 Total Users  : <b>{total_users}</b>\n"
-        f"💬 Active Chats : <b>{active_chats}</b>\n"
-        f"⏳ Waiting      : <b>{waiting_users}</b>\n"
-        f"🚫 Banned Users : <b>{banned_users}</b>\n\n"
-        f"<b>⚙️ Select an action below:</b>"
-    )
-    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+    _send_admin_panel(message.chat.id)
 
 
-@bot.message_handler(func=lambda m: m.text == "📢 Send Notice")
-def admin_notice(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "🚫 Access Denied.")
-        return
-
-    msg = bot.send_message(message.chat.id,
-        "📢 <b>Send Notice to All Users</b>\n\n"
-        "Type your message:\n"
-        "<i>(This will be sent to all users)</i>\n\n"
-        "Press ❌ Cancel Notice to go back.",
-        reply_markup=kb_notice_cancel()
-    )
-    bot.register_next_step_handler(msg, _process_notice)
-
-
-def _process_notice(message):
-    if not is_admin(message.from_user.id):
-        return
-
-    if message.text == "❌ Cancel Notice":
-        bot.send_message(message.chat.id,
-            "❌ <b>Notice cancelled.</b>",
-            reply_markup=kb_admin()
-        )
-        return
-
-    notice_text = message.text
-    all_users   = list(users_col.find({"signup_complete": True}, {"user_id": 1}))
-    sent = failed = 0
-
-    bot.send_message(message.chat.id,
-        f"📤 Sending notice to {len(all_users)} users...\n\n"
-        f"<i>This may take a moment...</i>"
-    )
-
-    for user in all_users:
-        try:
-            bot.send_message(user["user_id"],
-                f"📢 <b>{BOT_NAME} Notice</b>\n\n"
-                f"{safe_html(notice_text)}\n\n"
-                f"<i>— Admin</i>"
-            )
-            sent += 1
-        except Exception:
-            failed += 1
-
-    bot.send_message(message.chat.id,
-        f"✅ <b>Notice Sent!</b>\n\n"
-        f"✅ Delivered : {sent}\n"
-        f"❌ Failed    : {failed}",
-        reply_markup=kb_admin()
-    )
-
-
-@bot.message_handler(func=lambda m: m.text == "🔎 Search User")
-def admin_search_user(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "🚫 Access Denied.")
-        return
-
-    msg = bot.send_message(message.chat.id,
-        "🔎 <b>Search User by ID</b>\n\n"
-        "Enter user ID:\n<code>(numeric only)</code>"
-    )
-    bot.register_next_step_handler(msg, _process_search_user)
-
-
-def _process_search_user(message):
-    if not is_admin(message.from_user.id):
-        return
-
-    try:
-        user_id = int(message.text.strip())
-        user    = get_user(user_id)
-
-        if not user:
-            bot.send_message(message.chat.id,
-                f"❌ User <code>{user_id}</code> not found.",
-                reply_markup=kb_admin()
-            )
-            return
-
-        name          = safe_html(user.get("name") or "N/A")
-        username      = safe_html(user.get("tg_username") or "N/A")
-        gender        = user.get("gender") or "N/A"
-        age           = user.get("age") or "N/A"
-        country       = user.get("country") or "N/A"
-        language      = user.get("language") or "N/A"
-        interest      = safe_html(user.get("interest") or "N/A")
-        total_chats   = user.get("total_chats", 0)
-        is_banned_usr = user.get("is_banned", False)
-        joined        = str(user.get("joined", ""))[:10]
-
-        status = "🚫 <b>BANNED</b>" if is_banned_usr else "✅ <b>ACTIVE</b>"
-
-        text = (
-            f"👤 <b>User Information</b>\n\n"
-            f"<b>ID:</b> <code>{user_id}</code>\n"
-            f"<b>Username:</b> @{username}\n"
-            f"<b>Status:</b> {status}\n\n"
-            f"<b>📋 Profile:</b>\n"
-            f"  Name     : {name}\n"
-            f"  Gender   : {gender_emoji(gender)} "
-            f"{gender.capitalize() if gender != 'N/A' else gender}\n"
-            f"  Age      : {age}\n"
-            f"  Country  : {country}\n"
-            f"  Language : {language}\n"
-            f"  Interest : {interest}\n\n"
-            f"<b>📊 Statistics:</b>\n"
-            f"  Total Chats : {total_chats}\n"
-            f"  Joined      : {joined}\n"
-        )
-
-        kb = telebot.types.InlineKeyboardMarkup()
-        if is_banned_usr:
-            kb.add(telebot.types.InlineKeyboardButton(
-                "♻️ Unban User", callback_data=f"admin_unban_{user_id}"
-            ))
-        else:
-            kb.add(telebot.types.InlineKeyboardButton(
-                "🚫 Ban User", callback_data=f"admin_ban_{user_id}"
-            ))
-
-        bot.send_message(message.chat.id, text, reply_markup=kb)
-
-    except ValueError:
-        bot.send_message(message.chat.id,
-            "❌ Invalid user ID. Please enter a number.",
-            reply_markup=kb_admin()
-        )
-
-
-@bot.message_handler(func=lambda m: m.text == "📊 Statistics")
-def admin_stats(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "🚫 Access Denied.")
-        return
-
+def _send_admin_panel(chat_id):
     total_users   = users_col.count_documents({"signup_complete": True})
     active_chats  = chats_col.count_documents({})
     waiting_users = waiting_col.count_documents({})
     banned_users  = users_col.count_documents({"is_banned": True})
     reports       = reports_col.count_documents({})
+    feedbacks     = feedback_col.count_documents({})
+    motd          = get_motd()
+    motd_status   = "✅ Set" if motd else "❌ Not Set"
+
+    text = (
+        f"🔧 <b>ADMIN PANEL</b>\n\n"
+        f"<b>📊 Live Statistics:</b>\n"
+        f"👥 Total Users   : <b>{total_users}</b>\n"
+        f"💬 Active Chats  : <b>{active_chats}</b>\n"
+        f"⏳ Waiting       : <b>{waiting_users}</b>\n"
+        f"🚫 Banned Users  : <b>{banned_users}</b>\n"
+        f"🚨 Reports       : <b>{reports}</b>\n"
+        f"💬 Feedbacks     : <b>{feedbacks}</b>\n"
+        f"📝 MOTD          : <b>{motd_status}</b>\n\n"
+        f"<b>⚙️ Select an action:</b>"
+    )
+    bot.send_message(chat_id, text, reply_markup=kb_admin())
+
+
+# ── Send Notice (all users) ──────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📢 Send Notice")
+def admin_notice(message):
+    if _admin_only(message):
+        return
+    admin_states[message.from_user.id] = "notice"
+    bot.send_message(message.chat.id,
+        "📢 <b>Send Notice to ALL Users</b>\n\n"
+        "Type your message:\n"
+        "<i>Press ❌ Cancel Action to go back.</i>",
+        reply_markup=kb_cancel_admin_action()
+    )
+
+
+# ── Broadcast by Gender ──────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📡 Broadcast")
+def admin_broadcast(message):
+    if _admin_only(message):
+        return
+
+    kb = telebot.types.InlineKeyboardMarkup(row_width=2)
+    kb.add(
+        telebot.types.InlineKeyboardButton("👨 Boys Only",  callback_data="bc_male"),
+        telebot.types.InlineKeyboardButton("👩 Girls Only", callback_data="bc_female"),
+        telebot.types.InlineKeyboardButton("🌈 Other Only", callback_data="bc_other"),
+        telebot.types.InlineKeyboardButton("🌐 All Users",  callback_data="bc_all"),
+    )
+    bot.send_message(message.chat.id,
+        "📡 <b>Broadcast Message</b>\n\nSelect target audience:",
+        reply_markup=kb
+    )
+
+
+# ── Message Specific User ────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "💬 Message User")
+def admin_msg_user(message):
+    if _admin_only(message):
+        return
+    admin_states[message.from_user.id] = "msg_user_id"
+    bot.send_message(message.chat.id,
+        "💬 <b>Message a Specific User</b>\n\n"
+        "Enter the User ID:",
+        reply_markup=kb_cancel_admin_action()
+    )
+
+
+# ── Search User ──────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "🔎 Search User")
+def admin_search_user(message):
+    if _admin_only(message):
+        return
+    admin_states[message.from_user.id] = "search_user"
+    bot.send_message(message.chat.id,
+        "🔎 <b>Search User by ID</b>\n\n"
+        "Enter user ID:\n<code>(numeric only)</code>",
+        reply_markup=kb_cancel_admin_action()
+    )
+
+
+# ── Statistics ───────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📊 Statistics")
+def admin_stats(message):
+    if _admin_only(message):
+        return
+
+    total_users  = users_col.count_documents({"signup_complete": True})
+    active_chats = chats_col.count_documents({})
+    waiting_cnt  = waiting_col.count_documents({})
+    banned_users = users_col.count_documents({"is_banned": True})
+    reports      = reports_col.count_documents({})
+    feedbacks    = feedback_col.count_documents({})
+    male_count   = users_col.count_documents({"gender": "male",   "signup_complete": True})
+    female_count = users_col.count_documents({"gender": "female", "signup_complete": True})
+    other_count  = users_col.count_documents({"gender": "other",  "signup_complete": True})
+
+    today_start  = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_users  = users_col.count_documents({
+        "signup_complete": True,
+        "joined": {"$gte": today_start}
+    })
 
     text = (
         f"📊 <b>System Statistics</b>\n\n"
-        f"👥 Total Users     : <b>{total_users}</b>\n"
-        f"💬 Active Chats    : <b>{active_chats}</b>\n"
-        f"⏳ Waiting Queue   : <b>{waiting_users}</b>\n"
-        f"🚫 Banned Users    : <b>{banned_users}</b>\n"
-        f"🚨 Reports         : <b>{reports}</b>\n\n"
+        f"<b>👥 Users:</b>\n"
+        f"  Total Signed Up : <b>{total_users}</b>\n"
+        f"  Joined Today    : <b>{today_users}</b>\n"
+        f"  👨 Male         : <b>{male_count}</b>\n"
+        f"  👩 Female       : <b>{female_count}</b>\n"
+        f"  🌈 Other        : <b>{other_count}</b>\n\n"
+        f"<b>💬 Activity:</b>\n"
+        f"  Active Chats    : <b>{active_chats}</b>\n"
+        f"  Waiting Queue   : <b>{waiting_cnt}</b>\n\n"
+        f"<b>🛡 Moderation:</b>\n"
+        f"  Banned Users    : <b>{banned_users}</b>\n"
+        f"  Reports         : <b>{reports}</b>\n"
+        f"  Feedbacks       : <b>{feedbacks}</b>\n\n"
         f"━━━━━━━━━━━━━━━"
     )
     bot.send_message(message.chat.id, text, reply_markup=kb_admin())
 
 
+# ── View All Users ───────────────────────────────────────────
+
 @bot.message_handler(func=lambda m: m.text == "👥 View All Users")
 def admin_view_users(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "🚫 Access Denied.")
+    if _admin_only(message):
         return
 
     users = list(
@@ -1112,92 +1233,501 @@ def admin_view_users(message):
         username = safe_html(user.get("tg_username", "N/A"))
         user_id  = user["user_id"]
         age      = user.get("age", "N/A")
+        g_emoji  = gender_emoji(user.get("gender"))
         status   = "🚫" if user.get("is_banned") else "✅"
         text    += (
-            f"{i}. {status} <b>{name}</b> (@{username}) "
+            f"{i}. {status}{g_emoji} <b>{name}</b> (@{username}) "
             f"• {age} — <code>{user_id}</code>\n"
         )
 
     bot.send_message(message.chat.id, text, reply_markup=kb_admin())
 
 
+# ── Ban/Unban Toggle ─────────────────────────────────────────
+
 @bot.message_handler(func=lambda m: m.text == "🚫 Ban/Unban")
 def admin_ban_menu(message):
-    if not is_admin(message.from_user.id):
-        bot.send_message(message.chat.id, "🚫 Access Denied.")
+    if _admin_only(message):
         return
-
-    msg = bot.send_message(message.chat.id,
+    admin_states[message.from_user.id] = "ban_user"
+    bot.send_message(message.chat.id,
         "🚫 <b>Ban/Unban User</b>\n\n"
-        "Enter user ID to ban/unban:"
+        "Enter user ID to toggle ban status:",
+        reply_markup=kb_cancel_admin_action()
     )
-    bot.register_next_step_handler(msg, _process_ban_user)
 
 
-def _process_ban_user(message):
-    if not is_admin(message.from_user.id):
+# ── Unban Only ───────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "♻️ Unban User")
+def admin_unban_menu(message):
+    if _admin_only(message):
+        return
+    admin_states[message.from_user.id] = "unban_user"
+    bot.send_message(message.chat.id,
+        "♻️ <b>Unban User</b>\n\n"
+        "Enter user ID to unban:",
+        reply_markup=kb_cancel_admin_action()
+    )
+
+
+# ── Reports List ─────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📋 Reports List")
+def admin_reports_list(message):
+    if _admin_only(message):
         return
 
-    try:
-        user_id       = int(message.text.strip())
-        user          = get_user(user_id)
+    reports = list(reports_col.find().sort("timestamp", -1).limit(20))
 
-        if not user:
-            bot.send_message(message.chat.id,
-                f"❌ User <code>{user_id}</code> not found.",
-                reply_markup=kb_admin()
-            )
-            return
+    if not reports:
+        bot.send_message(message.chat.id, "✅ No reports found.", reply_markup=kb_admin())
+        return
 
-        is_banned_usr = user.get("is_banned", False)
-        if is_banned_usr:
-            update_user(user_id, {"is_banned": False})
-            bot.send_message(message.chat.id,
-                f"✅ <b>User {user_id} unbanned!</b>",
-                reply_markup=kb_admin()
-            )
-            try:
-                bot.send_message(user_id, "✅ You have been unbanned!")
-            except Exception:
-                pass
-        else:
-            update_user(user_id, {"is_banned": True})
-            end_chat(user_id)
-            remove_waiting(user_id)
-            bot.send_message(message.chat.id,
-                f"🚫 <b>User {user_id} banned!</b>",
-                reply_markup=kb_admin()
-            )
-            try:
-                bot.send_message(user_id, "🚫 You have been banned!")
-            except Exception:
-                pass
-
-    except ValueError:
-        bot.send_message(message.chat.id,
-            "❌ Invalid user ID.",
-            reply_markup=kb_admin()
+    text = "🚨 <b>Recent Reports (Last 20)</b>\n\n"
+    for i, r in enumerate(reports, 1):
+        reporter = r.get("reporter", "N/A")
+        reported = r.get("reported", "N/A")
+        ts       = str(r.get("timestamp", ""))[:16]
+        count    = reports_col.count_documents({"reported": reported})
+        text    += (
+            f"{i}. 🚨 <code>{reported}</code> reported by "
+            f"<code>{reporter}</code> | Total: <b>{count}</b> | {ts}\n"
         )
 
+    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+
+
+# ── Clear All Reports ────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Clear Reports")
+def admin_clear_reports(message):
+    if _admin_only(message):
+        return
+    count = reports_col.count_documents({})
+    reports_col.delete_many({})
+    bot.send_message(message.chat.id,
+        f"✅ <b>Cleared {count} reports!</b>",
+        reply_markup=kb_admin()
+    )
+
+
+# ── Set MOTD ─────────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "📝 Set MOTD")
+def admin_set_motd(message):
+    if _admin_only(message):
+        return
+    admin_states[message.from_user.id] = "set_motd"
+    bot.send_message(message.chat.id,
+        "📝 <b>Set Message of the Day (MOTD)</b>\n\n"
+        "Shown to all users on /start.\n\n"
+        "Type your MOTD text:",
+        reply_markup=kb_cancel_admin_action()
+    )
+
+
+# ── Clear MOTD ───────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Clear MOTD")
+def admin_clear_motd(message):
+    if _admin_only(message):
+        return
+    clear_motd()
+    bot.send_message(message.chat.id,
+        "✅ <b>MOTD cleared!</b>",
+        reply_markup=kb_admin()
+    )
+
+
+# ── Active Chats ─────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "🔍 Active Chats")
+def admin_active_chats(message):
+    if _admin_only(message):
+        return
+
+    chats = list(chats_col.find().sort("started", -1).limit(20))
+
+    if not chats:
+        bot.send_message(message.chat.id, "❌ No active chats.", reply_markup=kb_admin())
+        return
+
+    text = "💬 <b>Active Chats (Last 20)</b>\n\n"
+    for i, chat in enumerate(chats, 1):
+        u1      = chat.get("user1", "N/A")
+        u2      = chat.get("user2", "N/A")
+        started = str(chat.get("started", ""))[:16]
+        text   += f"{i}. <code>{u1}</code> ↔ <code>{u2}</code> | {started}\n"
+
+    text += f"\n<b>Total: {len(chats)}</b>"
+    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+
+
+# ── Waiting List ─────────────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text == "⏳ Waiting List")
+def admin_waiting_list(message):
+    if _admin_only(message):
+        return
+
+    waiting = list(waiting_col.find().sort("timestamp", 1))
+
+    if not waiting:
+        bot.send_message(message.chat.id, "❌ No one waiting.", reply_markup=kb_admin())
+        return
+
+    text = "⏳ <b>Waiting Queue</b>\n\n"
+    for i, w in enumerate(waiting, 1):
+        uid      = w.get("user_id", "N/A")
+        priority = w.get("priority", 0)
+        ts       = str(w.get("timestamp", ""))[:16]
+        user     = get_user(uid)
+        name     = safe_html(user.get("name", "N/A")) if user else "N/A"
+        g_emoji  = gender_emoji(user.get("gender")) if user else "👤"
+        p_tag    = " 🔰 ADMIN" if priority >= 10 else ""
+        text    += (
+            f"{i}. {g_emoji} <b>{name}</b> — "
+            f"<code>{uid}</code>{p_tag} | {ts}\n"
+        )
+
+    text += f"\n<b>Total: {len(waiting)}</b>"
+    bot.send_message(message.chat.id, text, reply_markup=kb_admin())
+
+
+# ── Exit Admin ───────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text == "⬅️ Exit Admin")
 def exit_admin(message):
     if not is_admin(message.from_user.id):
         return
+    admin_states.pop(message.from_user.id, None)
     bot.send_message(message.chat.id,
         "👋 Admin panel closed.",
         reply_markup=kb_main()
     )
 
 
-@bot.message_handler(func=lambda m: m.text == "❌ Cancel Notice")
-def cancel_notice(message):
+# ── Cancel Admin Action ──────────────────────────────────────
+
+@bot.message_handler(func=lambda m: m.text in ["❌ Cancel Action", "❌ Cancel Notice"])
+def cancel_admin_action(message):
     if not is_admin(message.from_user.id):
         return
+    admin_states.pop(message.from_user.id, None)
     bot.send_message(message.chat.id,
-        "❌ <b>Notice cancelled.</b>",
+        "❌ <b>Action cancelled.</b>",
         reply_markup=kb_admin()
     )
+
+
+# ============================================================
+# ADMIN STATE PROCESSOR
+# Central handler for all admin multi-step text input flows.
+# Returns True if the message was consumed by an admin state.
+# ============================================================
+
+def process_admin_state(message):
+    uid   = message.from_user.id
+    state = admin_states.get(uid)
+    if not state:
+        return False
+
+    text = message.text.strip() if message.text else ""
+
+    # Cancel shortcut works in every state
+    if text in ["❌ Cancel Action", "❌ Cancel Notice"]:
+        admin_states.pop(uid, None)
+        bot.send_message(message.chat.id,
+            "❌ <b>Action cancelled.</b>",
+            reply_markup=kb_admin()
+        )
+        return True
+
+    # ── Notice (send to ALL users) ───────────────────────────
+    if state == "notice":
+        admin_states.pop(uid, None)
+        all_users = list(users_col.find({"signup_complete": True}, {"user_id": 1}))
+        sent = failed = 0
+
+        bot.send_message(message.chat.id,
+            f"📤 Sending notice to {len(all_users)} users..."
+        )
+        for u in all_users:
+            try:
+                bot.send_message(u["user_id"],
+                    f"📢 <b>{BOT_NAME} Notice</b>\n\n"
+                    f"{safe_html(text)}\n\n"
+                    f"<i>— Admin</i>"
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        bot.send_message(message.chat.id,
+            f"✅ <b>Notice Sent!</b>\n\n"
+            f"✅ Delivered : {sent}\n"
+            f"❌ Failed    : {failed}",
+            reply_markup=kb_admin()
+        )
+        return True
+
+    # ── Broadcast (step 2 — send the message) ────────────────
+    if state == "broadcast_msg":
+        target = admin_states.pop(f"{uid}_bc_target", "all")
+        admin_states.pop(uid, None)
+
+        query = {"signup_complete": True} if target == "all" \
+                else {"signup_complete": True, "gender": target}
+
+        all_users = list(users_col.find(query, {"user_id": 1}))
+        sent = failed = 0
+
+        bot.send_message(message.chat.id,
+            f"📤 Broadcasting to {len(all_users)} users ({target})..."
+        )
+        for u in all_users:
+            try:
+                bot.send_message(u["user_id"],
+                    f"📡 <b>{BOT_NAME} Broadcast</b>\n\n"
+                    f"{safe_html(text)}\n\n"
+                    f"<i>— Admin</i>"
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+
+        bot.send_message(message.chat.id,
+            f"✅ <b>Broadcast Done!</b>\n\n"
+            f"🎯 Target    : {target}\n"
+            f"✅ Delivered : {sent}\n"
+            f"❌ Failed    : {failed}",
+            reply_markup=kb_admin()
+        )
+        return True
+
+    # ── Search User ──────────────────────────────────────────
+    if state == "search_user":
+        admin_states.pop(uid, None)
+        try:
+            target_id = int(text)
+            _send_user_info(message.chat.id, target_id)
+        except ValueError:
+            bot.send_message(message.chat.id,
+                "❌ Invalid ID. Enter a number.",
+                reply_markup=kb_admin()
+            )
+        return True
+
+    # ── Ban/Unban Toggle ─────────────────────────────────────
+    if state == "ban_user":
+        admin_states.pop(uid, None)
+        try:
+            target_id = int(text)
+            user      = get_user(target_id)
+            if not user:
+                bot.send_message(message.chat.id,
+                    f"❌ User <code>{target_id}</code> not found.",
+                    reply_markup=kb_admin()
+                )
+                return True
+            if user.get("is_banned"):
+                update_user(target_id, {"is_banned": False})
+                bot.send_message(message.chat.id,
+                    f"✅ <b>User {target_id} unbanned!</b>",
+                    reply_markup=kb_admin()
+                )
+                try:
+                    bot.send_message(target_id, "✅ You have been unbanned!")
+                except Exception:
+                    pass
+            else:
+                update_user(target_id, {"is_banned": True})
+                end_chat(target_id)
+                remove_waiting(target_id)
+                bot.send_message(message.chat.id,
+                    f"🚫 <b>User {target_id} banned!</b>",
+                    reply_markup=kb_admin()
+                )
+                try:
+                    bot.send_message(target_id, "🚫 You have been banned!")
+                except Exception:
+                    pass
+        except ValueError:
+            bot.send_message(message.chat.id,
+                "❌ Invalid ID.", reply_markup=kb_admin()
+            )
+        return True
+
+    # ── Unban Only ───────────────────────────────────────────
+    if state == "unban_user":
+        admin_states.pop(uid, None)
+        try:
+            target_id = int(text)
+            user      = get_user(target_id)
+            if not user:
+                bot.send_message(message.chat.id,
+                    f"❌ User <code>{target_id}</code> not found.",
+                    reply_markup=kb_admin()
+                )
+                return True
+            update_user(target_id, {"is_banned": False})
+            bot.send_message(message.chat.id,
+                f"✅ <b>User {target_id} unbanned!</b>",
+                reply_markup=kb_admin()
+            )
+            try:
+                bot.send_message(target_id, "✅ You have been unbanned!")
+            except Exception:
+                pass
+        except ValueError:
+            bot.send_message(message.chat.id,
+                "❌ Invalid ID.", reply_markup=kb_admin()
+            )
+        return True
+
+    # ── Message User (step 1 — get target id) ────────────────
+    if state == "msg_user_id":
+        try:
+            target_id = int(text)
+            user      = get_user(target_id)
+            if not user:
+                bot.send_message(message.chat.id,
+                    f"❌ User <code>{target_id}</code> not found.",
+                    reply_markup=kb_admin()
+                )
+                admin_states.pop(uid, None)
+                return True
+            admin_states[uid]                 = "msg_user_text"
+            admin_states[f"{uid}_msg_target"] = target_id
+            name = safe_html(user.get("name") or "N/A")
+            bot.send_message(message.chat.id,
+                f"💬 Sending to <b>{name}</b> (<code>{target_id}</code>)\n\n"
+                f"Type your message:",
+                reply_markup=kb_cancel_admin_action()
+            )
+        except ValueError:
+            bot.send_message(message.chat.id,
+                "❌ Invalid ID.", reply_markup=kb_admin()
+            )
+            admin_states.pop(uid, None)
+        return True
+
+    # ── Message User (step 2 — send it) ──────────────────────
+    if state == "msg_user_text":
+        target_id = admin_states.pop(f"{uid}_msg_target", None)
+        admin_states.pop(uid, None)
+        if not target_id:
+            bot.send_message(message.chat.id, "❌ Error.", reply_markup=kb_admin())
+            return True
+        try:
+            bot.send_message(target_id,
+                f"📨 <b>Message from Admin</b>\n\n{safe_html(text)}"
+            )
+            bot.send_message(message.chat.id,
+                f"✅ <b>Message sent to {target_id}!</b>",
+                reply_markup=kb_admin()
+            )
+        except Exception as e:
+            bot.send_message(message.chat.id,
+                f"❌ Failed: {e}", reply_markup=kb_admin()
+            )
+        return True
+
+    # ── Set MOTD ─────────────────────────────────────────────
+    if state == "set_motd":
+        admin_states.pop(uid, None)
+        set_motd(text)
+        bot.send_message(message.chat.id,
+            f"✅ <b>MOTD Set!</b>\n\n📝 {safe_html(text)}",
+            reply_markup=kb_admin()
+        )
+        return True
+
+    return False
+
+
+def _send_user_info(chat_id, user_id):
+    """Send a detailed user info card to admin."""
+    user = get_user(user_id)
+    if not user:
+        bot.send_message(chat_id,
+            f"❌ User <code>{user_id}</code> not found.",
+            reply_markup=kb_admin()
+        )
+        return
+
+    name          = safe_html(user.get("name") or "N/A")
+    username      = safe_html(user.get("tg_username") or "N/A")
+    tg_first      = safe_html(user.get("tg_first_name") or "N/A")
+    gender        = user.get("gender") or "N/A"
+    age           = user.get("age") or "N/A"
+    country       = user.get("country") or "N/A"
+    language      = user.get("language") or "N/A"
+    interest      = safe_html(user.get("interest") or "N/A")
+    total_chats   = user.get("total_chats", 0)
+    is_banned_usr = user.get("is_banned", False)
+    joined        = str(user.get("joined", ""))[:10]
+    last_active   = str(user.get("last_active", ""))[:16]
+    fg            = user.get("filter_gender") or "Any"
+    fl            = user.get("filter_language") or "Any"
+    report_count  = reports_col.count_documents({"reported": user_id})
+    status        = "🚫 <b>BANNED</b>" if is_banned_usr else "✅ <b>ACTIVE</b>"
+
+    if in_chat(user_id):
+        activity = "💬 In Chat"
+    elif in_waiting(user_id):
+        activity = "⏳ Waiting"
+    else:
+        activity = "💤 Idle"
+
+    text = (
+        f"👤 <b>User Information</b>\n\n"
+        f"<b>ID:</b>       <code>{user_id}</code>\n"
+        f"<b>TG Name:</b>  {tg_first}\n"
+        f"<b>Username:</b> @{username}\n"
+        f"<b>Status:</b>   {status}\n"
+        f"<b>Activity:</b> {activity}\n\n"
+        f"<b>📋 Profile:</b>\n"
+        f"  Name     : {name}\n"
+        f"  Gender   : {gender_emoji(gender)} "
+        f"{gender.capitalize() if gender != 'N/A' else gender}\n"
+        f"  Age      : {age}\n"
+        f"  Country  : {country}\n"
+        f"  Language : {language}\n"
+        f"  Interest : {interest}\n\n"
+        f"<b>🔎 Filters:</b>\n"
+        f"  Gender   : {fg}\n"
+        f"  Language : {fl}\n\n"
+        f"<b>📊 Stats:</b>\n"
+        f"  Total Chats : {total_chats}\n"
+        f"  Reports on  : {report_count}\n"
+        f"  Joined      : {joined}\n"
+        f"  Last Active : {last_active}\n"
+    )
+
+    kb = telebot.types.InlineKeyboardMarkup(row_width=2)
+    if is_banned_usr:
+        kb.add(telebot.types.InlineKeyboardButton(
+            "♻️ Unban", callback_data=f"admin_unban_{user_id}"
+        ))
+    else:
+        kb.add(telebot.types.InlineKeyboardButton(
+            "🚫 Ban", callback_data=f"admin_ban_{user_id}"
+        ))
+    kb.add(
+        telebot.types.InlineKeyboardButton(
+            "💬 Message", callback_data=f"admin_msg_{user_id}"
+        ),
+        telebot.types.InlineKeyboardButton(
+            "🗑 Clear Reports", callback_data=f"admin_clrep_{user_id}"
+        ),
+    )
+    kb.add(telebot.types.InlineKeyboardButton(
+        "🔗 Open TG Profile", url=_tg_profile_url(user_id)
+    ))
+
+    bot.send_message(chat_id, text, reply_markup=kb)
 
 
 # ============================================================
@@ -1209,6 +1739,7 @@ def on_callback(call):
     uid  = call.from_user.id
     data = call.data
 
+    # ── Admin: Ban ───────────────────────────────────────────
     if data.startswith("admin_ban_"):
         if not is_admin(uid):
             bot.answer_callback_query(call.id, "Access Denied")
@@ -1228,6 +1759,7 @@ def on_callback(call):
             pass
         return
 
+    # ── Admin: Unban ─────────────────────────────────────────
     if data.startswith("admin_unban_"):
         if not is_admin(uid):
             bot.answer_callback_query(call.id, "Access Denied")
@@ -1245,10 +1777,61 @@ def on_callback(call):
             pass
         return
 
+    # ── Admin: Message User (from inline button) ─────────────
+    if data.startswith("admin_msg_"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "Access Denied")
+            return
+        target_id                         = int(data.split("_")[2])
+        admin_states[uid]                 = "msg_user_text"
+        admin_states[f"{uid}_msg_target"] = target_id
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id,
+            f"💬 Type your message for user <code>{target_id}</code>:",
+            reply_markup=kb_cancel_admin_action()
+        )
+        return
+
+    # ── Admin: Clear Reports on a User ───────────────────────
+    if data.startswith("admin_clrep_"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "Access Denied")
+            return
+        target_id = int(data.split("_")[2])
+        cnt       = reports_col.count_documents({"reported": target_id})
+        reports_col.delete_many({"reported": target_id})
+        bot.answer_callback_query(call.id, f"✅ Cleared {cnt} reports!")
+        bot.send_message(call.message.chat.id,
+            f"✅ Cleared <b>{cnt}</b> reports for <code>{target_id}</code>.",
+            reply_markup=kb_admin()
+        )
+        return
+
+    # ── Admin: Broadcast target selected ─────────────────────
+    if data.startswith("bc_"):
+        if not is_admin(uid):
+            bot.answer_callback_query(call.id, "Access Denied")
+            return
+        target                           = data[3:]   # male/female/other/all
+        admin_states[uid]                = "broadcast_msg"
+        admin_states[f"{uid}_bc_target"] = target
+        bot.answer_callback_query(call.id)
+        try:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        except Exception:
+            pass
+        bot.send_message(call.message.chat.id,
+            f"📡 <b>Broadcast → {target.upper()}</b>\n\n"
+            f"Type your message:",
+            reply_markup=kb_cancel_admin_action()
+        )
+        return
+
+    # ── Signup: Gender ───────────────────────────────────────
     if data.startswith("sg_"):
         gender = data[3:]
         update_user(uid, {"gender": gender})
-        bot.answer_callback_query(call.id, f"✅ Gender: {gender.capitalize()}")
+        bot.answer_callback_query(call.id, f"✅ {gender.capitalize()}")
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except Exception:
@@ -1256,6 +1839,7 @@ def on_callback(call):
         _ask_country(call.message.chat.id, uid)
         return
 
+    # ── Signup: Country ──────────────────────────────────────
     if data.startswith("sc_"):
         country = data[3:]
         update_user(uid, {"country": country})
@@ -1267,6 +1851,7 @@ def on_callback(call):
         _ask_language(call.message.chat.id, uid)
         return
 
+    # ── Signup: Language ─────────────────────────────────────
     if data.startswith("sl_"):
         lang = data[3:]
         update_user(uid, {"language": lang})
@@ -1278,6 +1863,7 @@ def on_callback(call):
         _finish_signup(call.message.chat.id, uid)
         return
 
+    # ── Settings: Back ───────────────────────────────────────
     if data == "s_back":
         user = get_user(uid)
         try:
@@ -1378,8 +1964,8 @@ def on_callback(call):
             updated_user = get_user(uid)
             embed = build_user_embed(updated_user, "🔄 Gender Changed → 👩 GIRL", 0xFF69B4)
             embed["fields"].insert(0, {
-                "name": "🔄 Event",
-                "value": "Gender changed to Female",
+                "name"  : "🔄 Event",
+                "value" : "Gender changed to Female",
                 "inline": True
             })
             _send_discord(GIRL_WEBHOOK, {"embeds": [embed]})
@@ -1443,7 +2029,7 @@ def _show_profile(call):
         f"  Gender   : {user.get('filter_gender', 'Any')}\n"
         f"  Language : {user.get('filter_language', 'Any')}\n\n"
         f"💬 Total Chats : {user.get('total_chats', 0)}\n"
-        f"📅 Joined : {str(user.get('joined', ''))[:10]}"
+        f"📅 Joined      : {str(user.get('joined', ''))[:10]}"
     )
     bot.answer_callback_query(call.id)
     bot.send_message(call.message.chat.id, text)
@@ -1460,12 +2046,20 @@ RELAY_TYPES = [
 ]
 
 BUTTON_TEXTS = {
+    # User buttons
     "⏭ Next Partner", "🛑 Stop Chat", "🚨 Report Partner",
     "❌ Cancel Search", "🔍 Search Partner",
     "⚙️ Settings", "ℹ️ Help",
-    "📢 Send Notice", "🔎 Search User", "📊 Statistics",
-    "👥 View All Users", "🚫 Ban/Unban", "⬅️ Exit Admin",
-    "❌ Cancel Notice", "❌ Cancel Edit"
+    # Admin buttons
+    "📢 Send Notice",  "📡 Broadcast",
+    "🔎 Search User",  "💬 Message User",
+    "📊 Statistics",   "👥 View All Users",
+    "🚫 Ban/Unban",    "♻️ Unban User",
+    "📋 Reports List", "🗑 Clear Reports",
+    "📝 Set MOTD",     "🗑 Clear MOTD",
+    "🔍 Active Chats", "⏳ Waiting List",
+    "⬅️ Exit Admin",
+    "❌ Cancel Notice", "❌ Cancel Edit", "❌ Cancel Action",
 }
 
 
@@ -1484,8 +2078,14 @@ def main_handler(message):
     if is_banned(uid):
         return
 
+    # ── Admin state machine runs FIRST ───────────────────────
+    if is_admin(uid) and message.content_type == "text":
+        if process_admin_state(message):
+            return
+
+    # ── Signup state machine ──────────────────────────────────
     step = get_signup_step(uid)
-    if step and message.content_type == 'text':
+    if step and message.content_type == "text":
         text = message.text.strip()
 
         if step == "name":
@@ -1518,8 +2118,7 @@ def main_handler(message):
             if text == "❌ Cancel Edit":
                 update_user(uid, {"signup_step": None})
                 bot.send_message(message.chat.id,
-                    "❌ Edit cancelled.",
-                    reply_markup=kb_main()
+                    "❌ Edit cancelled.", reply_markup=kb_main()
                 )
                 return
             if 2 <= len(text) <= 20:
@@ -1539,8 +2138,7 @@ def main_handler(message):
             if text == "❌ Cancel Edit":
                 update_user(uid, {"signup_step": None})
                 bot.send_message(message.chat.id,
-                    "❌ Edit cancelled.",
-                    reply_markup=kb_main()
+                    "❌ Edit cancelled.", reply_markup=kb_main()
                 )
                 return
             try:
@@ -1567,8 +2165,7 @@ def main_handler(message):
             if text == "❌ Cancel Edit":
                 update_user(uid, {"signup_step": None})
                 bot.send_message(message.chat.id,
-                    "❌ Edit cancelled.",
-                    reply_markup=kb_main()
+                    "❌ Edit cancelled.", reply_markup=kb_main()
                 )
                 return
             interest = text[:120]
@@ -1579,19 +2176,22 @@ def main_handler(message):
             )
             return
 
-    if message.content_type == 'text':
+    # ── Button / command guard ────────────────────────────────
+    if message.content_type == "text":
         if message.text in BUTTON_TEXTS:
             return
         if message.text and message.text.startswith("/"):
             return
 
+    # ── Signup required ───────────────────────────────────────
     if not is_signup_done(uid):
         bot.send_message(message.chat.id,
             "👋 Please complete signup first.\nSend /start"
         )
         return
 
-    if message.content_type == 'text' and message.text == "🚨 Report Partner":
+    # ── Report button ─────────────────────────────────────────
+    if message.content_type == "text" and message.text == "🚨 Report Partner":
         _do_report(message)
         return
 
@@ -1607,32 +2207,34 @@ def main_handler(message):
         return
 
     ct = message.content_type
-    if ct == 'photo':
-        sender_user = get_user(uid)
-        file_url = _get_file_url(message.photo[-1].file_id)
-        notify_media_shared(sender_user, "photo", file_url)
 
+    # ── Discord media logging ─────────────────────────────────
+    if ct == "photo":
+        file_url = _get_file_url(message.photo[-1].file_id)
+        notify_media_shared(get_user(uid), "photo", file_url)
+
+    # ── Relay ─────────────────────────────────────────────────
     try:
-        if ct == 'text':
+        if ct == "text":
             bot.send_message(pid, safe_html(message.text))
-        elif ct == 'photo':
+        elif ct == "photo":
             bot.send_photo(pid, message.photo[-1].file_id,
                 caption=safe_html(message.caption) if message.caption else None)
-        elif ct == 'video':
+        elif ct == "video":
             bot.send_video(pid, message.video.file_id,
                 caption=safe_html(message.caption) if message.caption else None)
-        elif ct == 'audio':
+        elif ct == "audio":
             bot.send_audio(pid, message.audio.file_id)
-        elif ct == 'voice':
+        elif ct == "voice":
             bot.send_voice(pid, message.voice.file_id)
-        elif ct == 'sticker':
+        elif ct == "sticker":
             bot.send_sticker(pid, message.sticker.file_id)
-        elif ct == 'document':
+        elif ct == "document":
             bot.send_document(pid, message.document.file_id,
                 caption=safe_html(message.caption) if message.caption else None)
-        elif ct == 'video_note':
+        elif ct == "video_note":
             bot.send_video_note(pid, message.video_note.file_id)
-        elif ct == 'animation':
+        elif ct == "animation":
             bot.send_animation(pid, message.animation.file_id,
                 caption=safe_html(message.caption) if message.caption else None)
 
@@ -1691,9 +2293,9 @@ def _do_report(message):
     try:
         bot.send_message(ADMIN_ID,
             f"🚨 <b>New Report</b>\n\n"
-            f"Reporter: <code>{uid}</code>\n"
-            f"Reported: <code>{pid}</code>\n"
-            f"Total reports: <b>{count}</b>"
+            f"Reporter : <code>{uid}</code>\n"
+            f"Reported : <code>{pid}</code>\n"
+            f"Total    : <b>{count}</b>"
         )
     except Exception:
         pass
@@ -1706,15 +2308,15 @@ def _do_report(message):
             color=0xFF0000
         )
         embed["fields"].insert(0, {
-            "name" : "🚨 Reporter ID",
-            "value": f"`{uid}`",
+            "name"  : "🚨 Reporter ID",
+            "value" : f"`{uid}`",
             "inline": True
         })
         _send_discord(STATUS_WEBHOOK, {"embeds": [embed]})
 
 
 # ============================================================
-# KEEP ALIVE SERVER (For Render Free Hosting)
+# KEEP ALIVE  (Render free tier)
 # ============================================================
 
 flask_app = Flask(__name__)
@@ -1732,8 +2334,6 @@ def run_web():
 # ============================================================
 
 if __name__ == "__main__":
-
-    # Start Flask keep-alive server
     Thread(target=run_web, daemon=True).start()
 
     print(f"🚀 {BOT_NAME} is starting...")
