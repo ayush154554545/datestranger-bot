@@ -272,33 +272,34 @@ def _log_chat_started(uid1, uid2):
     if not user1 or not user2:
         return
 
-    def info(u):
+    def info_dict(u, uid):
         n  = u.get("name") or "?"
         un = u.get("tg_username") or ""
         g  = u.get("gender", "?")
         a  = u.get("age", "?")
         c  = u.get("country", "?")
         un_str = f"@{un}" if un else "no_username"
-        return f"{gender_emoji(g)} <b>{n}</b> ({un_str}) • {a} • {c}"
+        emoji = gender_emoji(g)
+        return f"{emoji} **{n}** ({un_str}) • {a} • {c} • ID:`{uid}`"
 
-    msg = (
-        f"━━━━━━━━━━━━━━━\n"
-        f"🆕 <b>NEW CHAT</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"{info(user1)}\n"
-        f"<code>{uid1}</code>\n\n"
-        f"     ↕\n\n"
-        f"{info(user2)}\n"
-        f"<code>{uid2}</code>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"⏰ {datetime.now().strftime('%H:%M:%S')}"
-    )
+    # ── Send to Discord chat-logs only ──
+    info1 = info_dict(user1, uid1)
+    info2 = info_dict(user2, uid2)
 
-    try:
-        bot.send_message(ADMIN_ID, msg)
-    except Exception:
-        pass
+    embed = {
+        "title": "🆕 NEW CHAT STARTED",
+        "color": 0x2ECC71,
+        "description": (
+            f"**👤 USER 1:**\n{info1}\n\n"
+            f"     ↕\n\n"
+            f"**👤 USER 2:**\n{info2}"
+        ),
+        "footer": {"text": f"Chat: {_chat_key(uid1, uid2)}"},
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    _send_discord(CHAT_LOG_WEBHOOK, {"embeds": [embed]})
 
+    # ── Track active chat ──
     chat_key = _chat_key(uid1, uid2)
     with tracker_lock:
         active_chats_tracker[chat_key] = {
@@ -1823,6 +1824,10 @@ def _admin_only(message):
 def cmd_admin(message):
     if _admin_only(message):
         return
+    # Clear any leftover admin state when opening admin panel
+    admin_states.pop(message.from_user.id, None)
+    admin_states.pop(f"{message.from_user.id}_msg_target", None)
+    admin_states.pop(f"{message.from_user.id}_bc_target", None)
     _send_admin_panel(message.chat.id)
 
 
@@ -2167,10 +2172,35 @@ def process_admin_state(message):
 
     text = message.text.strip() if message.text else ""
 
+    # ── Safety: if user pressed a button instead of typing input, cancel state ──
+    BUTTON_OVERRIDES = {
+        "📢 Send Notice", "📡 Broadcast", "💬 Message User",
+        "🔎 Search User", "📊 Statistics", "👥 View All Users",
+        "🚫 Ban/Unban", "♻️ Unban User", "📋 Reports List",
+        "🗑 Clear Reports", "📝 Set MOTD", "🗑 Clear MOTD",
+        "🔍 Active Chats", "⏳ Waiting List", "🧹 Clear All Waiting",
+        "⬅️ Exit Admin",
+    }
+    if text in BUTTON_OVERRIDES:
+        # User clicked another admin button instead of typing
+        admin_states.pop(uid, None)
+        admin_states.pop(f"{uid}_msg_target", None)
+        admin_states.pop(f"{uid}_bc_target", None)
+        return False  # Let the button handler take over
+
     if text in ["❌ Cancel Action", "❌ Cancel Notice"]:
         admin_states.pop(uid, None)
+        admin_states.pop(f"{uid}_msg_target", None)
+        admin_states.pop(f"{uid}_bc_target", None)
         bot.send_message(message.chat.id, "❌ Action cancelled.", reply_markup=kb_admin())
         return True
+
+    # ── Slash commands cancel state ──
+    if text.startswith("/"):
+        admin_states.pop(uid, None)
+        admin_states.pop(f"{uid}_msg_target", None)
+        admin_states.pop(f"{uid}_bc_target", None)
+        return False  # Let command handler take over
 
     if state == "notice":
         admin_states.pop(uid, None)
