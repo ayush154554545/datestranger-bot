@@ -3108,6 +3108,17 @@ def google_verify():
         "google-site-verification: google0a2474fd0bd07d91.html",
         mimetype="text/html"
     )
+# Bing Webmaster Tools Verification
+@flask_app.route("/BingSiteAuth.xml")
+def bing_verify():
+    from flask import Response
+    xml_content = '''<?xml version="1.0"?>
+<users>
+  <user>B74A78CD2CF22B9335272ECAE525B6F8</user>
+</users>'''
+    return Response(xml_content, mimetype="application/xml")
+
+
 
 @flask_app.route("/api/stats")
 def api_stats():
