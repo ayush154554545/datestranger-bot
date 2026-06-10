@@ -1,6 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- Google Tag Manager -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-NJX7SQGS');</script>
+    <!-- End Google Tag Manager -->
+
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <title>Date Stranger - Anonymous Chat | Meet Strangers Online | Telegram Dating Bot</title>
@@ -29,6 +37,7 @@
     <meta name="target" content="all">
     <meta name="HandheldFriendly" content="True">
     <meta name="MobileOptimized" content="320">
+    <meta name="google-site-verification" content="Wapze5dKLiH8nhZqkngW9j0CgKXxtJesmiM-fpODLrw" />
     <link rel="canonical" href="https://datestranger.onrender.com/">
 
     <!-- ============================================================ -->
@@ -124,6 +133,16 @@
         }
       ]
     }
+    </script>
+
+    <!-- Preconnect for performance -->
+     <!-- Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-ZZNMS8TNPJ"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-ZZNMS8TNPJ');
     </script>
 
     <!-- Preconnect for performance -->
@@ -1527,6 +1546,10 @@
     </style>
 </head>
 <body>
+    <!-- Google Tag Manager (noscript) -->
+    <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NJX7SQGS"
+    height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
+    <!-- End Google Tag Manager (noscript) -->
 
     <!-- ============================================================ -->
     <!-- CUSTOM CURSOR -->
@@ -2271,9 +2294,16 @@
 
     let lastUpdateRaw = null; // store raw date for live refresh
 
+    // Auto-detect API URL
+    // When opened from Render: uses relative /api/stats
+    // Can also hardcode: const API_URL = 'https://YOUR-APP.onrender.com/api/stats';
+    const API_URL = window.location.protocol === 'file:'
+        ? 'https://YOUR-APP-NAME.onrender.com/api/stats'
+        : '/api/stats';
+
     async function updateStatus() {
         try {
-            const response = await fetch('/api/stats', {
+            const response = await fetch(API_URL, {
                 signal: AbortSignal.timeout(8000),
                 cache : 'no-store'
             });
