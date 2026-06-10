@@ -3072,9 +3072,42 @@ def add_cors_headers(response):
 def home():
     try:
         with open("index.html", "r", encoding="utf-8") as f:
-            return f.read()
+            from flask import Response
+            response = Response(f.read(), mimetype="text/html")
+            response.headers["Cache-Control"] = "public, max-age=3600"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+            return response
     except FileNotFoundError:
         return "✅ Date Stranger Bot is Alive!"
+
+@flask_app.route("/sitemap.xml")
+def sitemap():
+    try:
+        with open("sitemap.xml", "r", encoding="utf-8") as f:
+            from flask import Response
+            return Response(f.read(), mimetype="application/xml")
+    except FileNotFoundError:
+        return "Not found", 404
+
+@flask_app.route("/robots.txt")
+def robots():
+    try:
+        with open("robots.txt", "r", encoding="utf-8") as f:
+            from flask import Response
+            return Response(f.read(), mimetype="text/plain")
+    except FileNotFoundError:
+        return "Not found", 404
+
+# Google Search Console Verification
+@flask_app.route("/google0a2474fd0bd07d91.html")
+def google_verify():
+    from flask import Response
+    return Response(
+        "google-site-verification: google0a2474fd0bd07d91.html",
+        mimetype="text/html"
+    )
 
 @flask_app.route("/api/stats")
 def api_stats():
