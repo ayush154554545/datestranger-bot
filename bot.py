@@ -3061,9 +3061,74 @@ def cleanup_stale_data():
 
 flask_app = Flask(__name__)
 
+@flask_app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
 @flask_app.route("/")
 def home():
-    return "✅ Date Stranger Bot is Alive!"
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return "✅ Date Stranger Bot is Alive!"
+
+@flask_app.route("/api/stats")
+def api_stats():
+    try:
+        # Real data from MongoDB
+        total_users   = users_col.count_documents({"signup_complete": True})
+        active_chats  = chats_col.count_documents({})
+        waiting_users = waiting_col.count_documents({})
+
+        # ── Online Now = total real signed-up members in bot ──
+        online_now = total_users
+
+        # Today's signups
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_users = users_col.count_documents({
+            "signup_complete": True,
+            "joined": {"$gte": today_start}
+        })
+
+        # Fake base + real on top (so it always shows 2000+)
+        FAKE_BASE      = 2000
+        display_total  = FAKE_BASE + total_users
+
+        # Last update time (last user activity)
+        last_user = users_col.find_one(
+            {"signup_complete": True},
+            sort=[("last_active", -1)]
+        )
+        last_update = ""
+        if last_user and last_user.get("last_active"):
+            last_update = last_user["last_active"].strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            last_update = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        from flask import jsonify
+        return jsonify({
+            "status"       : "online",
+            "total_users"  : display_total,
+            "real_users"   : total_users,
+            "online_now"   : online_now,
+            "active_chats" : active_chats,
+            "waiting"      : waiting_users,
+            "today_signups": today_users,
+            "server_time"  : datetime.utcnow().isoformat() + "Z",
+            "last_update"  : last_update,
+            "bot_name"     : BOT_NAME,
+            "bot_username" : BOT_USER,
+        })
+    except Exception as e:
+        from flask import jsonify
+        return jsonify({
+            "status" : "offline",
+            "error"  : str(e),
+        }), 500
 
 def run_web():
     flask_app.run(host="0.0.0.0", port=10000)
