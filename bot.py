@@ -90,6 +90,7 @@ stats_col    = db["daily_stats"]
 premium_col  = db["premium"]
 invites_col  = db["invites"]
 payments_col = db["payments"]
+ads_col      = db["advertisements"]
 
 # ── Indexes (idempotent, safe to run on every start) ─────────
 # These greatly improve reliability of matching/queue/payments.
@@ -511,6 +512,25 @@ def handle_pre_checkout(pre_checkout_query):
             )
         except Exception:
             pass
+
+
+# ============================================================
+# ADVERTISEMENT SYSTEM (INTERCEPT HANDLER)
+# ============================================================
+
+@bot.message_handler(func=lambda m: should_block_user_with_ad(m.from_user.id), content_types=['text', 'photo', 'video', 'audio', 'voice', 'sticker', 'document', 'video_note', 'animation'])
+def handle_ad_block(message):
+    uid = message.from_user.id
+    tg = message.from_user
+    
+    # Ensure user is initialized in DB so profile operations work
+    create_user(tg)
+    update_user(tg.id, {
+        "tg_first_name": tg.first_name or "",
+        "tg_username"  : tg.username or "",
+    })
+
+    send_user_ad(message.chat.id, uid)
 
 
 @bot.message_handler(content_types=["successful_payment"])
@@ -1604,6 +1624,7 @@ def kb_waiting():
 def kb_admin():
     kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📢 Send Notice",   "📡 Broadcast")
+    kb.row("📢 Advertisement Manager")
     kb.row("🔎 Search User",   "💬 Message User")
     kb.row("📊 Statistics",    "👥 View All Users")
     kb.row("🚫 Ban/Unban",     "♻️ Unban User")
@@ -2982,6 +3003,185 @@ def cancel_admin_action(message):
 
 
 # ============================================================
+# ADVERTISEMENT SYSTEM (ADMIN FLOW & HELPERS)
+# ============================================================
+
+def get_active_ad():
+    try:
+        ad = ads_col.find_one({"_id": "global_ad"})
+        if ad and ad.get("enabled", False):
+            return ad
+    except Exception as e:
+        print(f"[GET AD ERROR] {e}")
+    return None
+
+
+def should_block_user_with_ad(uid):
+    if is_admin(uid):
+        return False
+    ad = get_active_ad()
+    if not ad:
+        return False
+    if in_chat(uid):
+        return False
+        
+    user = get_user(uid)
+    if not user:
+        return True  # Must see ad if we don't have their profile yet
+        
+    ad_time = ad.get("update_time") or ad.get("creation_time")
+    user_ad_time = user.get("acknowledged_ad_time")
+    
+    if not user_ad_time:
+        return True
+    if ad_time and user_ad_time < ad_time:
+        return True
+    return False
+
+
+def send_user_ad(chat_id, uid):
+    ad = get_active_ad()
+    if not ad:
+        return
+        
+    ad_message = ad.get("message", "")
+    links = ad.get("links", [])
+    
+    text = (
+        "⚠️ <b>Please review the announcement below before continuing.</b>\n\n"
+        "📢 <b>Important Announcement</b>\n\n"
+        "➖➖➖➖➖➖➖➖➖➖\n\n"
+        "🔗 <b>Please join the following links:</b>\n"
+    )
+        
+    ikb = telebot.types.InlineKeyboardMarkup(row_width=1)
+    for link in links:
+        ikb.add(telebot.types.InlineKeyboardButton(link["name"], url=link["url"]))
+    ikb.add(telebot.types.InlineKeyboardButton("✅ Continue", callback_data="continue_after_ad"))
+    
+    bot.send_message(chat_id, text, reply_markup=ikb)
+
+
+def kb_ad_manager():
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("➕ Add Advertisement", "✏️ Edit Advertisement")
+    kb.row("🗑 Delete Advertisement", "👁 Preview Advertisement")
+    kb.row("⬅️ Back")
+    return kb
+
+
+def _send_ad_manager_panel(chat_id):
+    ad = ads_col.find_one({"_id": "global_ad"})
+    status = "❌ Disabled / Not Added"
+    if ad:
+        status = "✅ Enabled" if ad.get("enabled", False) else "❌ Disabled"
+        
+    text = (
+        "📢 <b>Advertisement Manager</b>\n\n"
+        f"Status: <b>{status}</b>\n\n"
+        "Select an option below:"
+    )
+    bot.send_message(chat_id, text, reply_markup=kb_ad_manager())
+
+
+def _send_edit_ad_panel(chat_id):
+    ad = ads_col.find_one({"_id": "global_ad"})
+    if not ad:
+        bot.send_message(chat_id, "❌ No advertisement exists to edit! Please add one first.", reply_markup=kb_ad_manager())
+        return
+    
+    links = ad.get("links", [])
+    
+    links_text = ""
+    for i, link in enumerate(links, 1):
+        links_text += f"{i}. <b>{safe_html(link['name'])}</b> — <code>{safe_html(link['url'])}</code>\n"
+    if not links_text:
+        links_text = "No links added yet."
+        
+    text = (
+        "✏️ <b>Edit Advertisement</b>\n\n"
+        f"🔗 <b>Current Links:</b>\n{links_text}\n"
+        "Select what you want to edit:"
+    )
+    
+    ikb = telebot.types.InlineKeyboardMarkup(row_width=1)
+    ikb.add(
+        telebot.types.InlineKeyboardButton("➕ Add New Link", callback_data="ad_edit_add_link"),
+        telebot.types.InlineKeyboardButton("❌ Remove Link", callback_data="ad_edit_rem_link"),
+        telebot.types.InlineKeyboardButton("🏷 Rename Link", callback_data="ad_edit_rename_link"),
+        telebot.types.InlineKeyboardButton("🔗 Change URL", callback_data="ad_edit_change_url"),
+    )
+    bot.send_message(chat_id, text, reply_markup=ikb)
+
+
+@bot.message_handler(func=lambda m: m.text == "📢 Advertisement Manager")
+def admin_ad_manager(message):
+    if _admin_only(message): return
+    _send_ad_manager_panel(message.chat.id)
+
+
+@bot.message_handler(func=lambda m: m.text == "➕ Add Advertisement")
+def admin_add_ad(message):
+    if _admin_only(message): return
+    uid = message.from_user.id
+    admin_states[uid] = "ad_add_links_count"
+    bot.send_message(message.chat.id,
+        "🔢 <b>How many links do you want to add?</b>\n\nEnter a number (1 or more):",
+        reply_markup=kb_cancel_admin_action()
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "✏️ Edit Advertisement")
+def admin_edit_ad(message):
+    if _admin_only(message): return
+    _send_edit_ad_panel(message.chat.id)
+
+
+@bot.message_handler(func=lambda m: m.text == "🗑 Delete Advertisement")
+def admin_delete_ad(message):
+    if _admin_only(message): return
+    res = ads_col.delete_one({"_id": "global_ad"})
+    if res.deleted_count > 0:
+        bot.send_message(message.chat.id, "🗑 <b>Advertisement has been completely removed from the database.</b>", reply_markup=kb_ad_manager())
+    else:
+        bot.send_message(message.chat.id, "❌ No advertisement exists to delete.", reply_markup=kb_ad_manager())
+
+
+@bot.message_handler(func=lambda m: m.text == "👁 Preview Advertisement")
+def admin_preview_ad(message):
+    if _admin_only(message): return
+    ad = ads_col.find_one({"_id": "global_ad"})
+    if not ad:
+        bot.send_message(message.chat.id, "❌ No advertisement exists to preview! Please add one first.", reply_markup=kb_ad_manager())
+        return
+        
+    ad_message = ad.get("message", "")
+    links = ad.get("links", [])
+    
+    text = (
+        "📢 <b>Important Announcement</b>\n\n"
+        "➖➖➖➖➖➖➖➖➖➖\n\n"
+        f"📝 {safe_html(ad_message)}\n\n"
+        "🔗 <b>Required Links:</b>\n"
+    )
+        
+    ikb = telebot.types.InlineKeyboardMarkup(row_width=1)
+    for link in links:
+        ikb.add(telebot.types.InlineKeyboardButton(link["name"], url=link["url"]))
+    ikb.add(telebot.types.InlineKeyboardButton("✅ Continue (Preview)", callback_data="ad_preview_continue"))
+    
+    bot.send_message(message.chat.id, "👁 <b>PREVIEW MODE:</b>")
+    bot.send_message(message.chat.id, text, reply_markup=ikb)
+
+
+@bot.message_handler(func=lambda m: m.text == "⬅️ Back")
+def admin_ad_back(message):
+    if not is_admin(message.from_user.id):
+        return
+    _send_admin_panel(message.chat.id)
+
+
+# ============================================================
 # ADMIN STATE PROCESSOR
 # ============================================================
 
@@ -2995,6 +3195,8 @@ def process_admin_state(message):
 
     BUTTON_OVERRIDES = {
         "📢 Send Notice", "📡 Broadcast", "💬 Message User",
+        "📢 Advertisement Manager", "➕ Add Advertisement", "✏️ Edit Advertisement",
+        "🗑 Delete Advertisement", "👁 Preview Advertisement", "⬅️ Back",
         "🔎 Search User", "📊 Statistics", "👥 View All Users",
         "🚫 Ban/Unban", "♻️ Unban User", "📋 Reports List",
         "🗑 Clear Reports", "📝 Set MOTD", "🗑 Clear MOTD",
@@ -3005,20 +3207,170 @@ def process_admin_state(message):
         admin_states.pop(uid, None)
         admin_states.pop(f"{uid}_msg_target", None)
         admin_states.pop(f"{uid}_bc_target", None)
+        admin_states.pop(f"{uid}_ad_links_count", None)
+        admin_states.pop(f"{uid}_ad_links_collected", None)
+        admin_states.pop(f"{uid}_ad_temp_link_name", None)
+        admin_states.pop(f"{uid}_ad_edit_link_index", None)
         return False
 
     if text in ["❌ Cancel Action", "❌ Cancel Notice"]:
+        is_ad_state = state and state.startswith("ad_")
         admin_states.pop(uid, None)
         admin_states.pop(f"{uid}_msg_target", None)
         admin_states.pop(f"{uid}_bc_target", None)
-        bot.send_message(message.chat.id, "❌ Action cancelled.", reply_markup=kb_admin())
+        admin_states.pop(f"{uid}_ad_links_count", None)
+        admin_states.pop(f"{uid}_ad_links_collected", None)
+        admin_states.pop(f"{uid}_ad_temp_link_name", None)
+        admin_states.pop(f"{uid}_ad_edit_link_index", None)
+        if is_ad_state:
+            bot.send_message(message.chat.id, "❌ Action cancelled.", reply_markup=kb_ad_manager())
+        else:
+            bot.send_message(message.chat.id, "❌ Action cancelled.", reply_markup=kb_admin())
         return True
 
     if text.startswith("/"):
         admin_states.pop(uid, None)
         admin_states.pop(f"{uid}_msg_target", None)
         admin_states.pop(f"{uid}_bc_target", None)
+        admin_states.pop(f"{uid}_ad_links_count", None)
+        admin_states.pop(f"{uid}_ad_links_collected", None)
+        admin_states.pop(f"{uid}_ad_temp_link_name", None)
+        admin_states.pop(f"{uid}_ad_edit_link_index", None)
         return False
+
+    # ── Advertisement Manager States ──
+    if state == "ad_add_links_count":
+        try:
+            count = int(text)
+            if count <= 0:
+                bot.send_message(message.chat.id, "❌ Please enter a positive number of links (1 or more):")
+                return True
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Enter a valid number:")
+            return True
+        
+        admin_states[f"{uid}_ad_links_count"] = count
+        admin_states[f"{uid}_ad_links_collected"] = []
+        admin_states[uid] = "ad_add_link_name"
+        bot.send_message(message.chat.id, "🏷 <b>Enter display name for Link #1:</b>")
+        return True
+
+    if state == "ad_add_link_name":
+        admin_states[f"{uid}_ad_temp_link_name"] = text
+        admin_states[uid] = "ad_add_link_url"
+        links = admin_states.get(f"{uid}_ad_links_collected", [])
+        bot.send_message(message.chat.id, f"🔗 <b>Send URL for Link #{len(links) + 1}:</b>")
+        return True
+
+    if state == "ad_add_link_url":
+        if not (text.startswith("http://") or text.startswith("https://") or text.startswith("tg://")):
+            bot.send_message(message.chat.id, "❌ Invalid URL. It must start with http://, https://, or tg://. Try again:")
+            return True
+            
+        link_name = admin_states.get(f"{uid}_ad_temp_link_name")
+        links = admin_states.get(f"{uid}_ad_links_collected", [])
+        links.append({"name": link_name, "url": text})
+        admin_states[f"{uid}_ad_links_collected"] = links
+        
+        count = admin_states.get(f"{uid}_ad_links_count", 0)
+        if len(links) < count:
+            admin_states[uid] = "ad_add_link_name"
+            bot.send_message(message.chat.id, f"🏷 <b>Enter display name for Link #{len(links) + 1}:</b>")
+        else:
+            links = admin_states.pop(f"{uid}_ad_links_collected", [])
+            admin_states.pop(f"{uid}_ad_links_count", None)
+            admin_states.pop(f"{uid}_ad_temp_link_name", None)
+            admin_states.pop(uid, None)
+
+            ads_col.update_one(
+                {"_id": "global_ad"},
+                {
+                    "$set": {
+                        "enabled": True,
+                        "links": links,
+                        "update_time": datetime.now()
+                    },
+                    "$setOnInsert": {
+                        "creation_time": datetime.now()
+                    }
+                },
+                upsert=True
+            )
+            bot.send_message(message.chat.id, "✅ <b>Advertisement has been configured and enabled!</b>", reply_markup=kb_ad_manager())
+        return True
+
+    if state == "ad_edit_add_link_name":
+        admin_states[f"{uid}_ad_temp_link_name"] = text
+        admin_states[uid] = "ad_edit_add_link_url"
+        bot.send_message(message.chat.id, "🔗 <b>Send URL for the new link:</b>")
+        return True
+
+    if state == "ad_edit_add_link_url":
+        if not (text.startswith("http://") or text.startswith("https://") or text.startswith("tg://")):
+            bot.send_message(message.chat.id, "❌ Invalid URL. It must start with http://, https://, or tg://. Try again:")
+            return True
+            
+        link_name = admin_states.pop(f"{uid}_ad_temp_link_name", None)
+        admin_states.pop(uid, None)
+        
+        ads_col.update_one(
+            {"_id": "global_ad"},
+            {
+                "$push": {"links": {"name": link_name, "url": text}},
+                "$set": {"update_time": datetime.now()}
+            }
+        )
+        bot.send_message(message.chat.id, "✅ <b>New link added successfully!</b>", reply_markup=kb_ad_manager())
+        _send_edit_ad_panel(message.chat.id)
+        return True
+
+    if state == "ad_edit_rename_input":
+        index = admin_states.pop(f"{uid}_ad_edit_link_index", None)
+        admin_states.pop(uid, None)
+        
+        ad = ads_col.find_one({"_id": "global_ad"})
+        if ad and "links" in ad and index is not None and 0 <= index < len(ad["links"]):
+            ad["links"][index]["name"] = text
+            ads_col.update_one(
+                {"_id": "global_ad"},
+                {
+                    "$set": {
+                        "links": ad["links"],
+                        "update_time": datetime.now()
+                    }
+                }
+            )
+            bot.send_message(message.chat.id, "✅ <b>Link renamed successfully!</b>", reply_markup=kb_ad_manager())
+        else:
+            bot.send_message(message.chat.id, "❌ <b>Error: Link not found.</b>", reply_markup=kb_ad_manager())
+        _send_edit_ad_panel(message.chat.id)
+        return True
+
+    if state == "ad_edit_url_input":
+        if not (text.startswith("http://") or text.startswith("https://") or text.startswith("tg://")):
+            bot.send_message(message.chat.id, "❌ Invalid URL. It must start with http://, https://, or tg://. Try again:")
+            return True
+            
+        index = admin_states.pop(f"{uid}_ad_edit_link_index", None)
+        admin_states.pop(uid, None)
+        
+        ad = ads_col.find_one({"_id": "global_ad"})
+        if ad and "links" in ad and index is not None and 0 <= index < len(ad["links"]):
+            ad["links"][index]["url"] = text
+            ads_col.update_one(
+                {"_id": "global_ad"},
+                {
+                    "$set": {
+                        "links": ad["links"],
+                        "update_time": datetime.now()
+                    }
+                }
+            )
+            bot.send_message(message.chat.id, "✅ <b>Link URL updated successfully!</b>", reply_markup=kb_ad_manager())
+        else:
+            bot.send_message(message.chat.id, "❌ <b>Error: Link not found.</b>", reply_markup=kb_ad_manager())
+        _send_edit_ad_panel(message.chat.id)
+        return True
 
     if state == "notice":
         admin_states.pop(uid, None)
@@ -3259,6 +3611,124 @@ def on_callback(call):
     data = call.data
 
     try:
+        # ── Advertisement Callbacks & Block ──
+        if data == "continue_after_ad":
+            update_user(uid, {"acknowledged_ad_time": datetime.now()})
+            bot.answer_callback_query(call.id, "✅ Thank you! You can now use the bot.")
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception:
+                pass
+            call.message.from_user = call.from_user
+            cmd_start(call.message)
+            return
+
+        if data == "ad_preview_continue":
+            bot.answer_callback_query(call.id, "This is just a preview button!", show_alert=True)
+            return
+
+        if should_block_user_with_ad(uid) and data != "continue_after_ad":
+            bot.answer_callback_query(call.id, "⚠️ Please review the announcement first.", show_alert=True)
+            send_user_ad(call.message.chat.id, uid)
+            return
+
+        # ── Advertisement Edit Callbacks ──
+        if data == "ad_edit_add_link":
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            admin_states[uid] = "ad_edit_add_link_name"
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id,
+                "🏷 <b>Enter display name for the new link:</b>",
+                reply_markup=kb_cancel_admin_action())
+            return
+
+        if data == "ad_edit_rem_link":
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            ad = ads_col.find_one({"_id": "global_ad"})
+            if not ad or not ad.get("links"):
+                bot.answer_callback_query(call.id, "❌ No links to remove", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            ikb = telebot.types.InlineKeyboardMarkup(row_width=1)
+            for i, link in enumerate(ad["links"]):
+                ikb.add(telebot.types.InlineKeyboardButton(f"❌ {link['name']}", callback_data=f"ad_rem_idx_{i}"))
+            bot.send_message(call.message.chat.id, "❌ <b>Select link to remove:</b>", reply_markup=ikb)
+            return
+
+        if data.startswith("ad_rem_idx_"):
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            index = int(data.split("_")[3])
+            ad = ads_col.find_one({"_id": "global_ad"})
+            if ad and "links" in ad and 0 <= index < len(ad["links"]):
+                removed = ad["links"].pop(index)
+                ads_col.update_one({"_id": "global_ad"}, {"$set": {"links": ad["links"], "update_time": datetime.now()}})
+                bot.answer_callback_query(call.id, f"✅ Removed {removed['name']}!")
+                try: bot.delete_message(call.message.chat.id, call.message.message_id)
+                except Exception: pass
+                _send_edit_ad_panel(call.message.chat.id)
+            else:
+                bot.answer_callback_query(call.id, "❌ Link not found", show_alert=True)
+            return
+
+        if data == "ad_edit_rename_link":
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            ad = ads_col.find_one({"_id": "global_ad"})
+            if not ad or not ad.get("links"):
+                bot.answer_callback_query(call.id, "❌ No links to rename", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            ikb = telebot.types.InlineKeyboardMarkup(row_width=1)
+            for i, link in enumerate(ad["links"]):
+                ikb.add(telebot.types.InlineKeyboardButton(f"✏️ {link['name']}", callback_data=f"ad_ren_idx_{i}"))
+            bot.send_message(call.message.chat.id, "✏️ <b>Select link to rename:</b>", reply_markup=ikb)
+            return
+
+        if data.startswith("ad_ren_idx_"):
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            index = int(data.split("_")[3])
+            admin_states[uid] = "ad_edit_rename_input"
+            admin_states[f"{uid}_ad_edit_link_index"] = index
+            bot.answer_callback_query(call.id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception: pass
+            bot.send_message(call.message.chat.id,
+                f"🏷 <b>Enter new display name for the link:</b>",
+                reply_markup=kb_cancel_admin_action())
+            return
+
+        if data == "ad_edit_change_url":
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            ad = ads_col.find_one({"_id": "global_ad"})
+            if not ad or not ad.get("links"):
+                bot.answer_callback_query(call.id, "❌ No links to modify", show_alert=True)
+                return
+            bot.answer_callback_query(call.id)
+            ikb = telebot.types.InlineKeyboardMarkup(row_width=1)
+            for i, link in enumerate(ad["links"]):
+                ikb.add(telebot.types.InlineKeyboardButton(f"🔗 {link['name']}", callback_data=f"ad_churl_idx_{i}"))
+            bot.send_message(call.message.chat.id, "🔗 <b>Select link to change URL:</b>", reply_markup=ikb)
+            return
+
+        if data.startswith("ad_churl_idx_"):
+            if not is_admin(uid):
+                bot.answer_callback_query(call.id, "Access Denied"); return
+            index = int(data.split("_")[3])
+            admin_states[uid] = "ad_edit_url_input"
+            admin_states[f"{uid}_ad_edit_link_index"] = index
+            bot.answer_callback_query(call.id)
+            try: bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception: pass
+            bot.send_message(call.message.chat.id,
+                f"🔗 <b>Send new URL for the link:</b>",
+                reply_markup=kb_cancel_admin_action())
+            return
+
         # ── Premium plan purchase ──
         if data.startswith("buy_"):
             plan_key = data[4:]
@@ -3599,6 +4069,8 @@ BUTTON_TEXTS = {
     "❌ Cancel Search", "🔍 Search Partner",
     "⚙️ Settings", "ℹ️ Help", "⭐ Premium", "🔗 Invite",
     "📢 Send Notice", "📡 Broadcast",
+    "📢 Advertisement Manager", "➕ Add Advertisement", "✏️ Edit Advertisement",
+    "🗑 Delete Advertisement", "👁 Preview Advertisement", "⬅️ Back",
     "🔎 Search User", "💬 Message User",
     "📊 Statistics", "👥 View All Users",
     "🚫 Ban/Unban", "♻️ Unban User",
