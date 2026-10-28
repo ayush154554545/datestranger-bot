@@ -5213,6 +5213,16 @@ def api_stats():
         return jsonify({"status": "offline", "error": str(e)}), 500
 
 
+class PollingExceptionHandler(telebot.ExceptionHandler):
+    def handle(self, exception):
+        err_msg = str(exception)
+        if "409" in err_msg or "Conflict" in err_msg:
+            print("⚠️ Telegram 409 Conflict: Another instance is currently polling (e.g. Render zero-downtime deploy). Waiting 10s for other instance to release connection...")
+            time.sleep(10)
+            return True
+        return False
+
+
 def run_web():
     flask_app.run(host="0.0.0.0", port=10000)
 
@@ -5222,6 +5232,14 @@ def run_web():
 # ============================================================
 
 if __name__ == "__main__":
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+        print("✅ Telegram webhook cleared for long-polling.")
+    except Exception as e:
+        print(f"⚠️ Webhook cleanup notice: {e}")
+
+    bot.exception_handler = PollingExceptionHandler()
+
     Thread(target=run_web, daemon=True).start()
     Thread(target=cleanup_stale_data, daemon=True).start()
     Thread(target=buffer_flusher, daemon=True).start()
@@ -5236,7 +5254,11 @@ if __name__ == "__main__":
 
     while True:
         try:
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+            bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
         except Exception as e:
             print(f"❌ Connection error: {e}")
+            try:
+                bot.stop_polling()
+            except Exception:
+                pass
             time.sleep(5)
